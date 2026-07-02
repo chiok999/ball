@@ -1,31 +1,35 @@
 """
-sofascore.py — Primary live-score source (ESPN is the fallback)
+sofascore.py — Primary live-score source (with Cloudflare Bypass)
 ==================================================================
-Plain requests.get() against Sofascore's public JSON endpoints — no
-Selenium, no key, same "free API" philosophy as the ESPN reader.
+Uses curl_cffi to impersonate a browser's low-level TLS signature, 
+preventing the HTTP 403 errors triggered by standard Python requests.
 """
 
 import time
-import requests
 from datetime import datetime, timezone
+from curl_cffi import requests
 
 SOFASCORE_API = "https://api.sofascore.com/api/v1"
 
+# Standard headers to complement the browser impersonation
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/131.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Referer": "https://www.sofascore.com/",
 }
 
-def _get(url: str, timeout: int = 10) -> dict | None:
+def _get(url: str, timeout: int = 15) -> dict | None:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        # impersonate="chrome" forces curl_cffi to handle the TLS handshake 
+        # exactly like a real desktop Google Chrome client.
+        r = requests.get(url, headers=HEADERS, impersonate="chrome", timeout=timeout)
         if r.status_code == 200:
             return r.json()
         print(f"[SOFASCORE] HTTP {r.status_code}: {url[:90]}")
     except Exception as e:
-        print(f"[SOFASCORE] ❌ Connection error: {e}")
+        print(f"[SOFASCORE] ❌ Connection or Bypass error: {e}")
     return None
 
 
@@ -61,7 +65,6 @@ def _normalize_event(e: dict) -> dict | None:
         home_sc = e.get("homeScore", {}).get("current")
         away_sc = e.get("awayScore", {}).get("current")
 
-        # Fallback to incident arrays if metrics fail
         goals = []
         bookings = []
 
