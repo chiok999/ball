@@ -5,8 +5,9 @@ Events posted:
   1. 📋 Lineup confirmed (ESPN does not provide this — field is always empty)
   2. 📌 Kick-off
   3. ⚽ Goal (with score and scorer)
-  4. ⏱️  Extra time start
-  5. 🏁  Full time (includes AET / penalty result)
+  4. ⏸️ Half Time Analysis & ELO Win Probability Shift
+  5. ⏱️ Extra time start
+  6. 🏁 Full Time (includes AET / penalty result with Visual Text Stats)
 """
 
 import json
@@ -110,6 +111,7 @@ def process_match(m: dict):
         state["posted_events"][mid] = {
             "status": "NONE",
             "goals_posted": [],
+            "half_time_posted": False,
             "updated_at": time.time()
         }
 
@@ -126,7 +128,6 @@ def process_match(m: dict):
                 mstate["status"] = "LINEUPS_POSTED"
                 _save_state()
 
-    # If lineup criteria wasn't met but match is starting, bump status forward
     if mstate["status"] == "NONE" and status == "SCHEDULED":
         mstate["status"] = "LINEUPS_POSTED"
         _save_state()
@@ -144,22 +145,34 @@ def process_match(m: dict):
         mstate["status"] = "IN_PLAY"
         _save_state()
 
-    # 3. Handle Live Match Goals & In-Play Events
+    # 3. Handle Live Match Goals
     if status in ("IN_PLAY", "PAUSED", "EXTRA_TIME", "SHOOTOUT"):
         if config.POST_GOALS:
             for g in m.get("goals", []):
                 gid = f"{g.get('minute')}:{g.get('scorer', {}).get('name')}:{g.get('isHome')}"
-                if gid in mstate["goals_posted"]:
+                if gid in mstate.get("goals_posted", []):
                     continue
                 post_text = poster.fmt_goal(m, g)
                 post_id = poster.post_to_facebook(post_text)
                 if post_id:
                     print(f"[BOT] ⚽ Goal Posted ({gid}) for match {mid}!")
+                    if "goals_posted" not in mstate:
+                        mstate["goals_posted"] = []
                     mstate["goals_posted"].append(gid)
                     state["last_filler_time"] = time.time()
                     _save_state()
 
-    # 4. Handle Extra Time Announcements
+    # 4. Handle Half Time Analytics & Predictive Win Probability Shifts
+    if status == "PAUSED" and not mstate.get("half_time_posted", False):
+        post_text = poster.fmt_half_time_analysis(m)
+        post_id = poster.post_to_facebook(post_text)
+        if post_id:
+            print(f"[BOT] ⏸️ In-Play Probability Shift Posted for match {mid}!")
+            mstate["half_time_posted"] = True
+            state["last_filler_time"] = time.time()
+            _save_state()
+
+    # 5. Handle Extra Time Announcements
     if status == "EXTRA_TIME" and mstate["status"] == "IN_PLAY":
         post_text = poster.fmt_extra_time(m)
         post_id = poster.post_to_facebook(post_text)
@@ -172,7 +185,7 @@ def process_match(m: dict):
         mstate["status"] = "EXTRA_TIME"
         _save_state()
 
-    # 5. Handle Full Time / Post Match Conclusions
+    # 6. Handle Full Time / Post Match Conclusions with Unicode Visual Stats
     if config.POST_FULLTIME and mstate["status"] in ("IN_PLAY", "EXTRA_TIME") and status == "FINISHED":
         post_text = poster.fmt_fulltime(m)
         post_id = poster.post_to_facebook(post_text)
@@ -242,7 +255,7 @@ def maybe_post_stats(matches):
 def maybe_post_transfer_news(tick):
     """
     Polls for new transfer news every X ticks, formats them elegantly,
-    posts them immediately, and instantly saves state to prevent duplicates.
+    posts them immediately with images intact, and instantly saves state.
     """
     if not config.POST_TRANSFER_NEWS:
         return
@@ -262,15 +275,17 @@ def maybe_post_transfer_news(tick):
                 continue
 
             post_text = poster.fmt_transfer_news(item)
-            image_url = item.get("image")
+            image_url = item.get("image")  # Guarding the source image completely
+            
+            # This triggers the Facebook Graph API Photo execution pipeline
             post_id = poster.post_to_facebook(post_text, image_url=image_url)
 
             if post_id:
-                print(f"[BOT] 📰 Transfer News Posted! id={post_id}")
+                print(f"[BOT] 📰 Transfer News Posted! id={post_id} (Has Image: {bool(image_url)})")
                 if "seen_keys" not in state:
                     state["seen_keys"] = set()
                 state["seen_keys"].add(key)
-                _save_state()  # Commit immediately inside loop block
+                _save_state()
 
     except Exception as e:
         print(f"[BOT] ⚠️ Error in transfer news cycle: {e}")
@@ -290,7 +305,6 @@ def maybe_post_filler(matches):
     if time.time() - state["last_filler_time"] < (config.FILLER_GAP_MINUTES * 60):
         return
 
-    # Alternate content generation variants
     minute_block = now.minute // 30
     post_text = None
 
