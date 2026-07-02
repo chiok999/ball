@@ -51,8 +51,10 @@ WORLD_CUP_SLUG       = os.getenv("WORLD_CUP_SLUG", "fifa.world")
 # (Troy: "remove those laliga league1 championship champions league tables")
 STANDINGS_RETIRED = {"esp.1", "fra.1", "eng.2", "uefa.champions"}
 
+# ── Content Filler Settings ─────────────────────────────────────────
 # Content-filler window & cadence — real match events always take priority
 # and reset this clock; filler only fires when nothing has posted recently.
+POST_FILLER          = os.getenv("POST_FILLER",           "true").lower() == "true"
 FILLER_START_HOUR    = int(os.getenv("FILLER_START_HOUR", "5"))   # 5am UTC
 FILLER_END_HOUR      = int(os.getenv("FILLER_END_HOUR",   "23"))  # 11pm UTC
 FILLER_GAP_MINUTES   = int(os.getenv("FILLER_GAP_MINUTES", "30"))
