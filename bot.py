@@ -14,6 +14,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import config
 import scraper
@@ -41,10 +42,6 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 
 def _start_keepalive():
-    try:
-        from http.server import BaseHTTPRequestHandler, HTTPServer
-    except ImportError:
-        return
     try:
         server = HTTPServer(("0.0.0.0", config.PORT), _HealthHandler)
         t = threading.Thread(target=server.serve_forever, daemon=True)
