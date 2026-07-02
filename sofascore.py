@@ -1,109 +1,118 @@
-import datetime
-from curl_cffi import requests  # Upgraded to impersonate real browser TLS handshakes
+"""
+sofascore.py — Primary live-score source (ESPN is the fallback)
+==================================================================
+Plain requests.get() against Sofascore's public JSON endpoints — no
+Selenium, no key, same "free API" philosophy as the ESPN reader.
+"""
 
-# Updated headers to exactly match Chrome wire-order conventions
+import time
+import requests
+from datetime import datetime, timezone
+
+SOFASCORE_API = "https://api.sofascore.com/api/v1"
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/131.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Origin": "https://www.sofascore.com",
-    "Referer": "https://www.sofascore.com/",
 }
 
-def _get(url: str, timeout: int = 15) -> dict | None:
-    """
-    Performs an impersonated GET request against Sofascore API endpoints 
-    to bypass strict Cloudflare/Imperva TLS fingerprint blocks.
-    """
+def _get(url: str, timeout: int = 10) -> dict | None:
     try:
-        # impersonate="chrome" forces curl_cffi to match browser JA3/JA4 hashes
-        r = requests.get(url, headers=HEADERS, timeout=timeout, impersonate="chrome")
-        
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code == 200:
             return r.json()
-            
-        print(f"[SOFASCORE] HTTP {r.status_code} when requesting: {url[:90]}")
+        print(f"[SOFASCORE] HTTP {r.status_code}: {url[:90]}")
     except Exception as e:
-        print(f"[SOFASCORE] ❌ Network request exception: {e}")
+        print(f"[SOFASCORE] ❌ Connection error: {e}")
     return None
 
-def get_todays_matches() -> list[dict]:
-    """
-    Fetches today's live and upcoming football matches from Sofascore.
-    """
-    # Format today's date into YYYY-MM-DD
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{today_str}"
-    
-    print(f"[SOFASCORE] Fetching match schedule for {today_str}...")
-    data = _get(url)
-    
-    if not data or "events" not in data:
-        print("[SOFASCORE] ⚠️ Failed to fetch or parse response payload.")
-        return []
-        
-    normalized_matches = []
-    for event in data["events"]:
-        try:
-            # Extract basic structure safely
-            home_team = event.get("homeTeam", {}).get("name", "Unknown Home")
-            away_team = event.get("awayTeam", {}).get("name", "Unknown Away")
-            status_type = event.get("status", {}).get("type", "inprogress")
-            
-            # Status resolution logic
-            status = "not_started"
-            if status_type == "finished":
-                status = "finished"
-            elif status_type == "inprogress":
-                status = "live"
 
-            match_data = {
-                "id": str(event.get("id")),
-                "home_team": home_team,
-                "away_team": away_team,
-                "home_score": event.get("homeScore", {}).get("current", 0),
-                "away_score": event.get("awayScore", {}).get("current", 0),
-                "status": status,
-                "minute": event.get("status", {}).get("description", ""),
-                "incidents": []
-            }
-            normalized_matches.append(match_data)
-        except KeyError as ke:
-            print(f"[SOFASCORE] Key parsing error inside event structure: {ke}")
+def get_all_leagues_today() -> list[dict]:
+    """Helper to dump raw matches across all leagues for debugging."""
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    data = _get(f"{SOFASCORE_API}/sport/football/scheduled-events/{today_str}")
+    if not data:
+        return []
+    return data.get("events", [])
+
+
+def _normalize_event(e: dict) -> dict | None:
+    try:
+        status_raw = e.get("status", {}).get("type", "none")
+        if status_raw == "notstarted":
+            status = "SCHEDULED"
+        elif status_raw in ("inprogress", "injurytime"):
+            status = "IN_PLAY"
+        elif status_raw == "halftime":
+            status = "PAUSED"
+        elif status_raw == "finished":
+            status = "FINISHED"
+        else:
+            return None  # Drop canceled, postponed, or unknown status structures
+
+        home = e.get("homeTeam", {})
+        away = e.get("awayTeam", {})
+        home_name = home.get("name", "Unknown")
+        away_name = away.get("name", "Unknown")
+
+        home_sc = e.get("homeScore", {}).get("current")
+        away_sc = e.get("awayScore", {}).get("current")
+
+        # Fallback to incident arrays if metrics fail
+        goals = []
+        bookings = []
+
+        return {
+            "id":       str(e.get("id", "")),
+            "status":   status,
+            "_comp_name": e.get("tournament", {}).get("name", ""),
+            "homeTeam": {"id": str(home.get("id", "")), "name": home_name, "shortName": home.get("shortName", home_name)},
+            "awayTeam": {"id": str(away.get("id", "")), "name": away_name, "shortName": away.get("shortName", away_name)},
+            "score": {
+                "halfTime": {"home": None, "away": None},
+                "fullTime": {
+                    "home": int(home_sc) if home_sc is not None else None,
+                    "away": int(away_sc) if away_sc is not None else None,
+                },
+            },
+            "goals":    goals,
+            "bookings": bookings,
+            "lineups":  [],
+        }
+    except Exception as e:
+        print(f"[SOFASCORE] Normalize error: {e}")
+        return None
+
+
+def get_todays_matches(comp_flag_fn=None, is_intl_fn=None) -> list[dict]:
+    """
+    Returns [] on any failure — the caller (scraper.py) treats an
+    empty list as a signal to fall back to ESPN for this poll.
+    """
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+
+    matches = []
+    live = _get(f"{SOFASCORE_API}/sport/football/events/live")
+    scheduled = _get(f"{SOFASCORE_API}/sport/football/scheduled-events/{today_str}")
+
+    seen_ids = set()
+    for payload in (live, scheduled):
+        if not payload:
             continue
-
-    print(f"[SOFASCORE] Successfully parsed {len(normalized_matches)} matches.")
-    return normalized_matches
-
-def get_match_incidents(match_id: str) -> list[dict]:
-    """
-    Fetches real-time events (Goals, Cards) for a specific match ID.
-    """
-    url = f"https://api.sofascore.com/api/v1/event/{match_id}/incidents"
-    data = _get(url)
-    
-    if not data or "incidents" not in data:
-        return []
-        
-    normalized_incidents = []
-    for inc in data["incidents"]:
-        try:
-            inc_type = inc.get("type")
-            # Only track highly vital match metrics
-            if inc_type not in ["goal", "card"]:
+        for e in payload.get("events", []):
+            eid = e.get("id")
+            if eid in seen_ids:
                 continue
-                
-            normalized_incidents.append({
-                "id": str(inc.get("id")),
-                "type": inc_type,
-                "time": inc.get("time", 0),
-                "is_home": inc.get("isHome", False),
-                "player": inc.get("player", {}).get("name", "Unknown Player"),
-                "detail": inc.get("incidentClass", "")  # e.g., regular, penalty, yellow, red
-            })
-        except Exception:
-            continue
             
-    return normalized_incidents
+            n = _normalize_event(e)
+            if n:
+                if comp_flag_fn:
+                    n["_comp_flag"] = comp_flag_fn(n.get("_comp_name", ""))
+                seen_ids.add(eid)
+                matches.append(n)
+                
+    return matches
