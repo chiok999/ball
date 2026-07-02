@@ -1,8 +1,8 @@
 """
-sofascore.py — Primary live-score source (with Cloudflare Bypass)
-==================================================================
-Uses curl_cffi to impersonate a browser's low-level TLS signature, 
-preventing the HTTP 403 errors triggered by standard Python requests.
+sofascore.py — Primary live-score source (with Cloudflare Bypass & Strict Filtering)
+==================================================================================
+Uses curl_cffi to bypass Cloudflare while strictly respecting the league and 
+international filtering logic passed down by scraper.py.
 """
 
 import time
@@ -11,7 +11,6 @@ from curl_cffi import requests
 
 SOFASCORE_API = "https://api.sofascore.com/api/v1"
 
-# Standard headers to complement the browser impersonation
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -22,25 +21,13 @@ HEADERS = {
 
 def _get(url: str, timeout: int = 15) -> dict | None:
     try:
-        # impersonate="chrome" forces curl_cffi to handle the TLS handshake 
-        # exactly like a real desktop Google Chrome client.
         r = requests.get(url, headers=HEADERS, impersonate="chrome", timeout=timeout)
         if r.status_code == 200:
             return r.json()
         print(f"[SOFASCORE] HTTP {r.status_code}: {url[:90]}")
     except Exception as e:
-        print(f"[SOFASCORE] ❌ Connection or Bypass error: {e}")
+        print(f"[SOFASCORE] ❌ Connection error: {e}")
     return None
-
-
-def get_all_leagues_today() -> list[dict]:
-    """Helper to dump raw matches across all leagues for debugging."""
-    now = datetime.now(timezone.utc)
-    today_str = now.strftime("%Y-%m-%d")
-    data = _get(f"{SOFASCORE_API}/sport/football/scheduled-events/{today_str}")
-    if not data:
-        return []
-    return data.get("events", [])
 
 
 def _normalize_event(e: dict) -> dict | None:
@@ -55,7 +42,7 @@ def _normalize_event(e: dict) -> dict | None:
         elif status_raw == "finished":
             status = "FINISHED"
         else:
-            return None  # Drop canceled, postponed, or unknown status structures
+            return None
 
         home = e.get("homeTeam", {})
         away = e.get("awayTeam", {})
@@ -64,9 +51,6 @@ def _normalize_event(e: dict) -> dict | None:
 
         home_sc = e.get("homeScore", {}).get("current")
         away_sc = e.get("awayScore", {}).get("current")
-
-        goals = []
-        bookings = []
 
         return {
             "id":       str(e.get("id", "")),
@@ -81,8 +65,8 @@ def _normalize_event(e: dict) -> dict | None:
                     "away": int(away_sc) if away_sc is not None else None,
                 },
             },
-            "goals":    goals,
-            "bookings": bookings,
+            "goals":    [],
+            "bookings": [],
             "lineups":  [],
         }
     except Exception as e:
@@ -92,13 +76,15 @@ def _normalize_event(e: dict) -> dict | None:
 
 def get_todays_matches(comp_flag_fn=None, is_intl_fn=None) -> list[dict]:
     """
-    Returns [] on any failure — the caller (scraper.py) treats an
-    empty list as a signal to fall back to ESPN for this poll.
+    Fetches matches and strictly filters them down to your 6 major leagues,
+    World Cup, and senior international matches using the scraper rules.
     """
     now = datetime.now(timezone.utc)
     today_str = now.strftime("%Y-%m-%d")
 
     matches = []
+    
+    # Pull current active live events and today's structural feed
     live = _get(f"{SOFASCORE_API}/sport/football/events/live")
     scheduled = _get(f"{SOFASCORE_API}/sport/football/scheduled-events/{today_str}")
 
@@ -111,6 +97,30 @@ def get_todays_matches(comp_flag_fn=None, is_intl_fn=None) -> list[dict]:
             if eid in seen_ids:
                 continue
             
+            # 1. Extract tournament name to check major leagues/World Cup
+            comp_name = e.get("tournament", {}).get("name", "")
+            
+            # Determine if this match fits standard 6 leagues or World Cup criteria
+            has_valid_flag = False
+            if comp_flag_fn:
+                flag = comp_flag_fn(comp_name)
+                # If the competition helper maps a valid emoji flag, it's an allowed major league/WC
+                if flag and flag != "⚽":
+                    has_valid_flag = True
+
+            # 2. Extract team names to check international friendly/country criteria
+            home_name = e.get("homeTeam", {}).get("name", "")
+            away_name = e.get("awayTeam", {}).get("name", "")
+            
+            is_valid_intl = False
+            if is_intl_fn:
+                # Runs your strict script logic checking for 'U17', 'U21', 'Women', etc.
+                is_valid_intl = is_intl_fn(home_name, away_name)
+
+            # STRICT BLOCK: Skip if it belongs to neither a target league nor a senior international tier
+            if not has_valid_flag and not is_valid_intl:
+                continue
+
             n = _normalize_event(e)
             if n:
                 if comp_flag_fn:
