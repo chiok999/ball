@@ -16,7 +16,6 @@ def post_to_facebook(message: str, image_url: str = None) -> str | None:
         print("[POSTER] ⚠️ Facebook Configuration missing. Post skipped.")
         return None
 
-    # Image mapping logic preserved for high algorithmic reach
     if image_url:
         url = f"https://graph.facebook.com/v18.0/{config.FB_PAGE_ID}/photos"
         payload = {
@@ -124,8 +123,7 @@ def _match_hashtags(match: dict) -> list[str]:
 def _build_post(header: str, body: list[str], hashtags: list[str]) -> str:
     body_str = "\n".join(body)
     hash_str = " ".join(hashtags)
-    footer = "👉 Follow our page for more instant football updates and analytics! ⚽🔥"
-    return f"{header}\n━━━━━━━━━━━━━━━━━━━━━\n\n{body_str}\n\n{footer}\n\n{hash_str}"
+    return f"{header}\n\n{body_str}\n\n{hash_str}"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -215,7 +213,7 @@ def fmt_half_time_analysis(match: dict) -> str:
         "",
         "🔥 LIVE IN-PLAY WIN PROBABILITY SHIFTS:",
         f"Based on the first 45 mins, statistical data model predicts:",
-        f"👉 {match['homeTeam']['name']} now has a {h_live}% probability of secure victory.",
+        f"👉 {match['homeTeam']['name']} now has a {h_live}% probability of victory.",
         f"👉 Draw probability rests at {d_live}%.",
         f"👉 {match['awayTeam']['name']} drops to a {a_live}% projection."
     ]
@@ -319,15 +317,10 @@ def fmt_daily_preview(matches: list[dict]) -> str | None:
 
 
 def fmt_transfer_news(transfer_item: dict) -> str:
-    """
-    Advanced Transfer Intelligence Formatter (Multi-Source Enabled).
-    Parses headlines to award tier grades and credits diverse news sources dynamically.
-    """
     league = transfer_item.get("league", "Top Football")
     headline = transfer_item.get("headline", "").strip()
     lower_headline = headline.lower()
     
-    # Dynamic Tier Grading & Source Recognition Algorithm
     tier_rating = "[Tier 3: Mixed Reliability 📊]"
     detected_source = "Global Scouting Networks"
     
@@ -377,10 +370,8 @@ def fmt_transfer_news(transfer_item: dict) -> str:
         tags.append("#LaLiga")
 
     full_post = (
-        f"{header}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{header}\n\n"
         f"{"\n".join(body)}\n\n"
-        f"👉 Follow our page for more instant football updates and breaking news! ⚽🔥\n\n"
         f"{" ".join(tags)}"
     )
     return full_post
