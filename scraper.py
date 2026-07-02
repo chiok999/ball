@@ -1,12 +1,11 @@
 """
 scraper.py — Match aggregation wrapper for ScoreLine Live
 =========================================================
-Bridges match retrieval between Sofascore (primary with bypass) 
-and ESPN (fallback), explicitly passing down filtering logic.
+Bridges match retrieval using Sofascore as the primary data pipeline,
+explicitly passing down specialized league and international filtering logic.
 """
 
 import sofascore
-import espn
 
 def _comp_flag_helper(comp_name: str) -> str:
     """
@@ -48,7 +47,7 @@ def _is_valid_senior_intl(home_name: str, away_name: str) -> bool:
 def get_todays_matches() -> list[dict]:
     """
     Attempts to fetch filtered matches from Sofascore.
-    Falls back completely to ESPN if Sofascore returns 0 entries.
+    Returns the mapped data directly to the bot engine.
     """
     # Force Sofascore to use our strict local filtering logic
     matches = sofascore.get_todays_matches(
@@ -59,23 +58,5 @@ def get_todays_matches() -> list[dict]:
     if matches:
         return matches
 
-    print("[SCRAPER] Sofascore returned 0 target matches — falling back to ESPN")
-    
-    # Fallback track
-    raw_espn = espn.fetch_todays_matches()
-    filtered_espn = []
-    
-    for m in raw_espn:
-        comp_name = m.get("_comp_name", "")
-        home_name = m.get("homeTeam", {}).get("name", "")
-        away_name = m.get("awayTeam", {}).get("name", "")
-        
-        flag = _comp_flag_helper(comp_name)
-        is_intl = _is_valid_senior_intl(home_name, away_name)
-        
-        # Apply the exact same rules to ESPN payloads if Sofascore drops out
-        if (flag and flag != "⚽") or is_intl:
-            m["_comp_flag"] = flag
-            filtered_espn.append(m)
-            
-    return filtered_espn
+    print("[SCRAPER] No live matching target fixtures found on Sofascore data engine for today.")
+    return []
