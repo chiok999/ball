@@ -58,6 +58,7 @@ STATE_FILE = "state.json"
 _events:            dict[str, float] = {}
 _last_preview_date: str              = ""
 _post_timestamps:   list[float]      = []    # rolling timestamps for rate limiting
+_transfer_post_timestamps: list[float] = []  # separate rolling window just for transfer news
 _last_post_time:    float            = 0.0   # for MIN_POST_GAP enforcement
 
 # World Cup filler cadence — any real match event resets this clock.
@@ -130,6 +131,26 @@ def _rate_limit_ok() -> bool:
     _post_timestamps = [t for t in _post_timestamps if t > hour_ago]
     if len(_post_timestamps) >= config.MAX_POSTS_PER_HOUR:
         print(f"[BOT] ⚠️  MAX_POSTS_PER_HOUR ({config.MAX_POSTS_PER_HOUR}) reached — skipping post")
+        return False
+    return True
+
+
+def _transfer_rate_limit_ok() -> bool:
+    """Separate, tighter cap just for breaking transfer news. A deadline-day
+    burst of headlines across several leagues can pass MAX_POSTS_PER_HOUR
+    easily while still looking spammy on its own — this keeps transfer
+    posts specifically to config.TRANSFER_MAX_POSTS_PER_WINDOW per
+    config.TRANSFER_WINDOW_MINUTES, independent of everything else the
+    bot posts (goals, kickoffs, etc. are unaffected)."""
+    global _transfer_post_timestamps
+    now = time.time()
+    window_ago = now - config.TRANSFER_WINDOW_MINUTES * 60
+    _transfer_post_timestamps = [t for t in _transfer_post_timestamps if t > window_ago]
+    if len(_transfer_post_timestamps) >= config.TRANSFER_MAX_POSTS_PER_WINDOW:
+        print(
+            f"[TRANSFERS] ⚠️  Cap reached ({config.TRANSFER_MAX_POSTS_PER_WINDOW} per "
+            f"{config.TRANSFER_WINDOW_MINUTES}min) — holding remaining stories for next window"
+        )
         return False
     return True
 
@@ -291,9 +312,23 @@ def maybe_post_transfer_news(tick: int):
         print(f"[TRANSFERS] ⚠️  {e}")
         return
     for item in items:
+        if not _transfer_rate_limit_ok():
+            break  # remaining items stay unseen and get retried next poll
         print(f"[TRANSFERS] 📰 {item['league']}: {item['headline'][:60]}")
-        img = _safe_image(graphics.render_card, "transfer", "🚨", "BREAKING NEWS", [item["headline"]])
-        _post_if_new(item["key"], poster.fmt_transfer_news(item), image_path=img)
+        img = None
+        # Prefer the real article photo (people want to see the player,
+        # not a solid-color text card) — falls back automatically to
+        # the generated card if the source had no image or it failed
+        # to download/decode.
+        if item.get("image"):
+            img = _safe_image(
+                graphics.render_photo_card, "transfer", item["headline"],
+                item["image"], source=item.get("source"),
+            )
+        if not img:
+            img = _safe_image(graphics.render_card, "transfer", "", "BREAKING NEWS", [item["headline"]])
+        if _post_if_new(item["key"], poster.fmt_transfer_news(item), image_path=img):
+            _transfer_post_timestamps.append(time.time())
         time.sleep(2)
 
 
