@@ -24,10 +24,14 @@ import gzip
 import io
 import time
 import requests
+import config
 
 TRANSFERMARKT_CSV_URL = "https://pub-e682421888d945d684bcae8890b0ec20.r2.dev/data/transfers.csv.gz"
-CACHE_PATH = "transfermarkt_transfers_cache.csv"
-CACHE_META_PATH = "transfermarkt_cache_meta.txt"
+# Lives on config.DATA_DIR (a mounted Railway Volume, if configured) so
+# the weekly dataset isn't re-downloaded from scratch on every redeploy.
+CACHE_PATH = os.path.join(config.DATA_DIR, "transfermarkt_transfers_cache.csv")
+CACHE_META_PATH = os.path.join(config.DATA_DIR, "transfermarkt_cache_meta.txt")
+os.makedirs(config.DATA_DIR, exist_ok=True)
 REFRESH_INTERVAL_DAYS = 7
 RECENT_WINDOW_DAYS = 45  # only surface transfers from roughly the current window
 
