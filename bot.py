@@ -53,7 +53,8 @@ def _start_keepalive():
 # STATE
 # ══════════════════════════════════════════════════════════════════
 
-STATE_FILE = "state.json"
+STATE_FILE = os.path.join(config.DATA_DIR, "state.json")
+os.makedirs(config.DATA_DIR, exist_ok=True)
 
 _events:            dict[str, float] = {}
 _last_preview_date: str              = ""
@@ -366,8 +367,9 @@ def maybe_post_transfermarkt_highlight():
     fee = item.get("fee_eur")
     fee_line = "Fee undisclosed" if fee is None else ("Free transfer" if fee == 0 else f"€{fee/1_000_000:.1f}M")
     img = _safe_image(
-        graphics.render_card, "transfer", "🚨", "Transfer Flashback",
-        [f"{item['from_club']} ➜ {item['to_club']}", item["player"], fee_line],
+        graphics.render_transfer_flashback_card,
+        item["player"], item["from_club"], item["to_club"], fee_line,
+        date_line=item.get("transfer_date", ""),
     )
     if _post_if_new(item["key"], poster.fmt_transfermarkt_highlight(item), image_path=img):
         _last_transfermarkt_post_time = time.time()
