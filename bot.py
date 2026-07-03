@@ -436,9 +436,10 @@ def process_match(match: dict):
         }}
         print(f"[BOT] 📌 Kickoff: {hname} vs {aname}")
         img = _safe_image(
-            graphics.render_score_card, "kickoff", "🚩", hname, aname, 0, 0,
-            "Kickoff!",
-            match["homeTeam"].get("crest", ""), match["awayTeam"].get("crest", ""),
+            graphics.render_score_card_premium, "kickoff", hname, aname, 0, 0,
+            competition=match.get("_comp_name", ""),
+            status_label="KICK-OFF", show_pulse=True,
+            home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
         )
         _post_if_new(_key_kickoff(mid), poster.fmt_kickoff(kickoff_match), image_path=img)
 
@@ -451,13 +452,15 @@ def process_match(match: dict):
                 assist = goal.get("assist", {}).get("name")
                 print(f"[BOT] ⚽ Goal: {scorer}" + (f" (assist: {assist})" if assist else "") + f" — {hname} vs {aname}")
                 h_sc, a_sc = _current_goal_score(match, goal)
-                event_line = f"⚽ {scorer} {poster._minute(goal['minute'])}'"
+                event_line = f"{scorer} {poster._minute(goal['minute'])}'"
                 if assist:
-                    event_line += f"\n🎯 {assist}"
+                    event_line += f" (assist: {assist})"
                 img = _safe_image(
-                    graphics.render_score_card, "goal", "🚩", hname, aname, h_sc, a_sc,
-                    event_line,
-                    match["homeTeam"].get("crest", ""), match["awayTeam"].get("crest", ""),
+                    graphics.render_score_card_premium, "goal", hname, aname, h_sc, a_sc,
+                    competition=match.get("_comp_name", ""),
+                    event_line=event_line,
+                    status_label=f"{poster._minute(goal['minute'])}' \u2022 LIVE", show_pulse=True,
+                    home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
                 )
                 _post_if_new(key, poster.fmt_goal(match, goal), image_path=img)
                 time.sleep(2)
@@ -478,15 +481,16 @@ def process_match(match: dict):
         else:
             print(f"[BOT] 🏁 Full time: {hname} vs {aname}")
         h_sc, a_sc = match["score"]["fullTime"].get("home", 0), match["score"]["fullTime"].get("away", 0)
-        event_line = "Full Time"
+        status_label = "FULL TIME"
         if match.get("_went_to_penalties"):
-            event_line = "Full Time (Penalties)"
+            status_label = "FULL TIME \u2022 PENALTIES"
         elif match.get("_went_to_et"):
-            event_line = "Full Time (AET)"
+            status_label = "FULL TIME \u2022 AET"
         img = _safe_image(
-            graphics.render_score_card, "fulltime", "🏁", hname, aname, h_sc or 0, a_sc or 0,
-            event_line,
-            match["homeTeam"].get("crest", ""), match["awayTeam"].get("crest", ""),
+            graphics.render_score_card_premium, "fulltime", hname, aname, h_sc or 0, a_sc or 0,
+            competition=match.get("_comp_name", ""),
+            status_label=status_label, show_pulse=False,
+            home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
         )
         _post_if_new(_key_fulltime(mid), poster.fmt_fulltime(match), image_path=img)
 
