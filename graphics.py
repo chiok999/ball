@@ -336,9 +336,138 @@ def render_score_card(kind: str, marker: str, home_name: str, away_name: str,
     return _save(img)
 
 
-# ══════════════════════════════════════════════════════════════════
-# PHOTO CARD — real downloaded photo (transfer news) branded to match
-# ══════════════════════════════════════════════════════════════════
+def _spaced_text(draw, xy, text, font, fill, tracking=6):
+    """Draws text with extra letter-spacing (Pillow has no native
+    tracking control) — this is what makes a header like
+    'INTERNATIONAL FRIENDLY' read as sleek/broadcast instead of a
+    plain wrapped string."""
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += _text_w(draw, ch, font) + tracking
+    return x  # right edge, if the caller needs it
+
+
+def _stadium_canvas(accent_key: str):
+    """Night-stadium backdrop: soft floodlight glows, a dark vignette,
+    and a faint blurred pitch texture — built entirely with Pillow
+    (gradients + gaussian blur), so it's instant, free, and has zero
+    risk of hallucinated text/flags the way a generative image would.
+    """
+    W, H = CARD_SIZE
+    base_dark = (10, 14, 12)
+    img = Image.new("RGB", CARD_SIZE, base_dark)
+
+    # Floodlight glows — a few large soft-edged bright ellipses, blurred
+    # heavily, positioned like stadium floodlights from above.
+    glow_layer = Image.new("RGB", CARD_SIZE, (0, 0, 0))
+    gdraw = ImageDraw.Draw(glow_layer)
+    accent_rgb = _hex_to_rgb(ACCENTS.get(accent_key, ACCENTS["default"]))
+    for cx, cy, r, color in [
+        (170, 60, 260, (255, 244, 214)),
+        (W - 170, 60, 260, tuple(min(255, c + 60) for c in accent_rgb)),
+        (W // 2, H + 80, 520, accent_rgb),
+    ]:
+        gdraw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(120))
+    img = Image.blend(img, glow_layer, 0.55)
+
+    # Faint blurred "pitch" texture along the bottom third — soft
+    # diagonal stripes suggesting mown grass, kept subtle so it never
+    # competes with the scoreboard.
+    pitch = Image.new("RGB", CARD_SIZE, base_dark)
+    pdraw = ImageDraw.Draw(pitch)
+    stripe_w = 70
+    for i, x in enumerate(range(-H, W, stripe_w)):
+        shade = (20, 46, 30) if i % 2 == 0 else (16, 38, 24)
+        pdraw.polygon([(x, H), (x + H, 0), (x + H + stripe_w, 0), (x + stripe_w, H)], fill=shade)
+    pitch = pitch.filter(ImageFilter.GaussianBlur(8))
+    mask = Image.new("L", CARD_SIZE, 0)
+    mdraw = ImageDraw.Draw(mask)
+    mdraw.rectangle([0, int(H * 0.62), W, H], fill=140)
+    img = Image.composite(pitch, img, mask)
+
+    # Dark vignette so the edges recede and the scoreboard stays the
+    # clear focal point.
+    vignette = Image.new("L", CARD_SIZE, 0)
+    vdraw = ImageDraw.Draw(vignette)
+    vdraw.ellipse([-260, -260, W + 260, H + 260], fill=255)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(180))
+    black = Image.new("RGB", CARD_SIZE, (0, 0, 0))
+    img = Image.composite(img, black, vignette)
+
+    return img, ImageDraw.Draw(img)
+
+
+def render_score_card_premium(kind: str, home_name: str, away_name: str,
+                               home_score, away_score, competition: str = "",
+                               event_line: str = "", status_label: str = "",
+                               show_pulse: bool = False,
+                               home_crest_url: str = "", away_crest_url: str = "") -> str:
+    """
+    Stadium-night styled variant of render_score_card — same exact,
+    instantly-computed score/scorer text (no generative model in the
+    loop, so nothing here can misspell a name or draw a wrong flag),
+    just a more premium/cinematic backdrop for kickoff/goal/full-time.
+
+    status_label examples: "KICK-OFF", "72' \u2022 LIVE", "FULL TIME (AET)".
+    show_pulse draws the small red live-dot — use for kickoff/goal,
+    leave off for full-time.
+    """
+    img, draw = _stadium_canvas(kind)
+    W, H = CARD_SIZE
+
+    if competition:
+        header_font = _font(28)
+        header = competition.upper()
+        hw_est = sum(_text_w(draw, c, header_font) + 6 for c in header)
+        _spaced_text(draw, ((W - hw_est) / 2, 56), header, header_font, "#D4AF6A", tracking=6)
+
+    if status_label:
+        font = _font(26)
+        pw = _text_w(draw, status_label, font) + (44 if show_pulse else 36)
+        px = (W - pw) / 2
+        draw.rounded_rectangle([px, 104, px + pw, 104 + 46], radius=23, fill=(0, 0, 0, 160))
+        text_x = px + 16
+        if show_pulse:
+            draw.ellipse([px + 16, 122, px + 26, 132], fill="#EF4444")
+            text_x = px + 36
+        draw.text((text_x, 114), status_label, font=font, fill=WHITE)
+
+    crest_size = (200, 200)
+    crest_y = 230
+    home_crest = _crest_or_avatar(home_crest_url, home_name, crest_size)
+    away_crest = _crest_or_avatar(away_crest_url, away_name, crest_size)
+    img.paste(home_crest, (120, crest_y), home_crest)
+    img.paste(away_crest, (W - 120 - crest_size[0], crest_y), away_crest)
+    draw = ImageDraw.Draw(img)
+
+    score_text = f"{home_score}   -   {away_score}"
+    score_font = _font(110)
+    tw = _text_w(draw, score_text, score_font)
+    _shadow_text(draw, ((W - tw) / 2, crest_y + 50), score_text, score_font, fill=WHITE, offset=(0, 6))
+
+    name_font = _font(34)
+    for name, cx in ((home_name, 220), (away_name, W - 220)):
+        ty = crest_y + crest_size[1] + 20
+        for i, line in enumerate(textwrap.wrap(name, width=14)[:2]):
+            lw = _text_w(draw, line, name_font)
+            draw.text((cx - lw / 2, ty + i * 42), line, font=name_font, fill=WHITE)
+
+    if event_line:
+        ev_font = _font(40)
+        y = crest_y + crest_size[1] + 150
+        for raw_line in event_line.split("\n"):
+            for line in textwrap.wrap(raw_line, width=34) or [""]:
+                lw = _text_w(draw, line, ev_font)
+                _shadow_text(draw, ((W - lw) / 2, y), line, ev_font, fill="#D4AF6A")
+                y += 50
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
+
+
+
 
 def render_photo_card(kind: str, headline: str, image_url: str,
                        source: str = None, sub_line: str = None) -> str | None:
