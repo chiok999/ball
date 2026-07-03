@@ -60,6 +60,13 @@ TRANSFER_LEAGUES: dict[str, str] = {
 }
 TRANSFER_POLL_EVERY_TICKS = int(os.getenv("TRANSFER_POLL_EVERY_TICKS", "5"))
 
+# Dedicated cap for breaking transfer news specifically — a burst of
+# real transfer headlines (deadline day, several leagues at once) can
+# otherwise post many times in a row even though MAX_POSTS_PER_HOUR
+# hasn't been hit yet, which reads as spammy and risks a Facebook flag.
+TRANSFER_MAX_POSTS_PER_WINDOW = int(os.getenv("TRANSFER_MAX_POSTS_PER_WINDOW", "2"))
+TRANSFER_WINDOW_MINUTES       = int(os.getenv("TRANSFER_WINDOW_MINUTES",       "30"))
+
 # ── VAR / disallowed goals ────────────────────────────────────────────
 POST_VAR_DISALLOWED  = os.getenv("POST_VAR_DISALLOWED", "true").lower() == "true"
 
