@@ -1,87 +1,399 @@
 """
-config.py — ScoreLine Live configuration
-All settings come from environment variables so Railway deployment is clean.
-A local .env file is loaded automatically when present (for development).
+graphics.py — Branded image cards for Facebook photo posts
+==============================================================
+Facebook's algorithm meaningfully favors photo posts over plain text.
+This renders on-brand PNGs so bot.py can use poster.post_photo()
+instead of poster.post() — no external image APIs, no stock-photo
+licensing.
+
+IMPORTANT DESIGN NOTE (read before touching marker/badge text):
+Pillow's bundled default font ("Aileron") has NO emoji glyphs. Any
+emoji character drawn with ImageFont.load_default() renders as a
+blank box, not the emoji. So this file never draws emoji onto the
+canvas — every "marker" is a real vector badge (colored pill +
+plain-text label) instead. Emoji are still fine in the Facebook
+*caption* (poster.py), since Facebook's own renderer draws those,
+not Pillow.
+
+Two families of card:
+  render_card         — generic stat/news card (title + body lines)
+  render_score_card    — kickoff / goal / full-time, two-team layout
+  render_photo_card    — NEW: wraps a real downloaded photo (e.g. a
+                          player photo from a transfer headline) with
+                          the same badge/ribbon branding, instead of
+                          generating a text-only card. Falls back to
+                          render_card automatically if no usable image
+                          is available.
 """
+
 import os
+import time
+import textwrap
+import requests
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-# Load .env if present (dev only — Railway uses real env vars)
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+CARD_SIZE = (1080, 1080)
+OUT_DIR = "cards"
+os.makedirs(OUT_DIR, exist_ok=True)
 
-# ── Facebook ──────────────────────────────────────────────────────
-FB_PAGE_ID           = os.getenv("FB_PAGE_ID", "")
-FB_PAGE_ACCESS_TOKEN = os.getenv("FB_PAGE_ACCESS_TOKEN", "")
+BRAND_NAME = "MATCH CORNA LIVE"
+BRAND_TAGLINE = "Follow the page for live scores"
 
-# ── What to post ──────────────────────────────────────────────────
-POST_LINEUPS        = os.getenv("POST_LINEUPS",        "true").lower() == "true"
-POST_KICKOFF        = os.getenv("POST_KICKOFF",        "true").lower() == "true"
-POST_GOALS          = os.getenv("POST_GOALS",          "true").lower() == "true"
-POST_FULLTIME       = os.getenv("POST_FULLTIME",       "true").lower() == "true"
-POST_DAILY_PREVIEW  = os.getenv("POST_DAILY_PREVIEW",  "true").lower() == "true"
-
-# Hour (UTC) to post the morning fixture list
-DAILY_PREVIEW_HOUR  = int(os.getenv("DAILY_PREVIEW_HOUR", "7"))
-
-# ── Polling ───────────────────────────────────────────────────────
-POLL_INTERVAL       = int(os.getenv("POLL_INTERVAL", "60"))
-
-# ── Anti-spam ─────────────────────────────────────────────────────
-MIN_POST_GAP        = int(os.getenv("MIN_POST_GAP",        "20"))
-MAX_POSTS_PER_HOUR  = int(os.getenv("MAX_POSTS_PER_HOUR",  "25"))
-
-# ── Railway keep-alive ────────────────────────────────────────────
-PORT = int(os.getenv("PORT", "8080"))
-
-# ── World Cup mode ─────────────────────────────────────────────────
-# When True: quiet gaps (no real match event in FILLER_GAP_MINUTES) are
-# filled with World Cup content (top scorers / win probability).
-WORLD_CUP_MODE       = os.getenv("WORLD_CUP_MODE", "true").lower() == "true"
-WORLD_CUP_SLUG       = os.getenv("WORLD_CUP_SLUG", "fifa.world")
-
-# Content-filler window & cadence — real match events always take priority
-# and reset this clock; filler only fires when nothing has posted recently.
-FILLER_START_HOUR    = int(os.getenv("FILLER_START_HOUR", "5"))   # 5am UTC
-FILLER_END_HOUR      = int(os.getenv("FILLER_END_HOUR",   "23"))  # 11pm UTC
-FILLER_GAP_MINUTES   = int(os.getenv("FILLER_GAP_MINUTES", "30"))
-
-# ── Transfer news ────────────────────────────────────────────────────
-POST_TRANSFER_NEWS   = os.getenv("POST_TRANSFER_NEWS", "true").lower() == "true"
-TRANSFER_LEAGUES: dict[str, str] = {
-    "eng.1": "Premier League",
-    "esp.1": "La Liga",
-    "ger.1": "Bundesliga",
-    "ita.1": "Serie A",
-    "fra.1": "Ligue 1",
-    "usa.1": "MLS",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/131.0.0.0 Safari/537.36",
 }
-TRANSFER_POLL_EVERY_TICKS = int(os.getenv("TRANSFER_POLL_EVERY_TICKS", "5"))
 
-# Dedicated cap for breaking transfer news specifically — a burst of
-# real transfer headlines (deadline day, several leagues at once) can
-# otherwise post many times in a row even though MAX_POSTS_PER_HOUR
-# hasn't been hit yet, which reads as spammy and risks a Facebook flag.
-TRANSFER_MAX_POSTS_PER_WINDOW = int(os.getenv("TRANSFER_MAX_POSTS_PER_WINDOW", "2"))
-TRANSFER_WINDOW_MINUTES       = int(os.getenv("TRANSFER_WINDOW_MINUTES",       "30"))
+# Background color per post category
+ACCENTS = {
+    "default":  "#14532D",  # pitch green
+    "goal":     "#14532D",
+    "kickoff":  "#166534",
+    "fulltime": "#1E3A5F",  # deep blue
+    "var":      "#7A1F1F",  # red
+    "transfer": "#7C2D12",  # burnt orange/red — matches breaking-news urgency
+    "stats":    "#312E81",  # indigo (World Cup filler cards)
+}
 
-# ── VAR / disallowed goals ────────────────────────────────────────────
-POST_VAR_DISALLOWED  = os.getenv("POST_VAR_DISALLOWED", "true").lower() == "true"
+# Badge (pill) style per category — drawn, never emoji.
+BADGES = {
+    "default":  ("MATCH UPDATE",  "#14532D"),
+    "goal":     ("GOAL",          "#B45309"),
+    "kickoff":  ("KICK-OFF",      "#15803D"),
+    "fulltime": ("FULL TIME",     "#1E3A5F"),
+    "var":      ("VAR REVIEW",    "#7A1F1F"),
+    "transfer": ("BREAKING NEWS", "#C2410C"),
+    "stats":    ("STATS",         "#4338CA"),
+}
 
-# ── Data source order ──────────────────────────────────────────────
-# Sofascore is tried first; ESPN is the automatic fallback.
-PRIMARY_SOURCE  = os.getenv("PRIMARY_SOURCE", "sofascore")
-FALLBACK_SOURCE = os.getenv("FALLBACK_SOURCE", "espn")
+GOLD  = "#FFD400"
+WHITE = "#FFFFFF"
+INK   = "#0B0F0C"
 
-# ── Win probability (ClubElo) ─────────────────────────────────────────
-POST_WIN_PROBABILITY = os.getenv("POST_WIN_PROBABILITY", "true").lower() == "true"
-ELO_HOME_ADVANTAGE    = int(os.getenv("ELO_HOME_ADVANTAGE", "60"))
+# Deterministic palette used for initials-avatar fallback when a crest
+# can't be fetched — keeps team "identity" visually consistent run to run.
+_AVATAR_PALETTE = [
+    "#EF4444", "#F59E0B", "#10B981", "#3B82F6",
+    "#8B5CF6", "#EC4899", "#14B8A6", "#F97316",
+]
 
-# ── Transfermarkt weekly-dataset hourly highlight ──────────────────────
-# Separate from POST_TRANSFER_NEWS (breaking news, immediate). This is
-# real historical data (github.com/dcaribou/transfermarkt-datasets),
-# refreshed weekly, drip-fed as one highlight per hour.
-POST_TRANSFERMARKT_HIGHLIGHTS = os.getenv("POST_TRANSFERMARKT_HIGHLIGHTS", "true").lower() == "true"
-TRANSFERMARKT_INTERVAL_MIN    = int(os.getenv("TRANSFERMARKT_INTERVAL_MIN", "60"))
+
+def _hex_to_rgb(h: str) -> tuple:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    # Pillow's scalable default font only ships one weight; we fake a
+    # bolder look elsewhere via stroke_width rather than a second family,
+    # so every card looks consistent without shipping font files.
+    return ImageFont.load_default(size=size)
+
+
+def _text_w(draw, text, font) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _shadow_text(draw, xy, text, font, fill=WHITE, stroke_width=0,
+                  shadow=(0, 0, 0, 130), offset=(0, 3)):
+    """Draws a soft drop shadow behind text so it stays readable over
+    photos or busy gradients, then the text itself on top."""
+    x, y = xy
+    draw.text((x + offset[0], y + offset[1]), text, font=font, fill=shadow)
+    draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width,
+               stroke_fill=fill)
+
+
+def _fetch_image(url: str, timeout: int = 8):
+    """Best-effort image fetch (crest, photo, etc). Returns a PIL Image
+    in RGBA, or None on any failure — callers must have a fallback."""
+    if not url:
+        return None
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        return Image.open(BytesIO(r.content)).convert("RGBA")
+    except Exception:
+        return None
+
+
+# Kept for backwards-compat call sites (bot.py imports this name).
+def _fetch_crest(url: str, max_size=(170, 170)):
+    img = _fetch_image(url)
+    if img is None:
+        return None
+    img.thumbnail(max_size)
+    return img
+
+
+def _save(img) -> str:
+    path = os.path.join(OUT_DIR, f"card_{int(time.time() * 1000)}.png")
+    img.convert("RGB").save(path, "PNG")
+    return path
+
+
+# ══════════════════════════════════════════════════════════════════
+# SHARED CHROME — background, badge pill, brand ribbon
+# ══════════════════════════════════════════════════════════════════
+
+def _base_canvas(accent_key: str):
+    color = ACCENTS.get(accent_key, ACCENTS["default"])
+    top = _hex_to_rgb(color)
+    bottom = tuple(max(0, c - 40) for c in top)
+    img = Image.new("RGB", CARD_SIZE, top)
+    draw = ImageDraw.Draw(img)
+    for y in range(CARD_SIZE[1]):
+        t = y / CARD_SIZE[1]
+        row = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        draw.line([(0, y), (CARD_SIZE[0], y)], fill=row)
+
+    # Subtle diagonal texture stripes — cheap way to make a flat gradient
+    # look like a designed template instead of a solid color fill.
+    stripe = Image.new("RGBA", CARD_SIZE, (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(stripe)
+    W, H = CARD_SIZE
+    step = 90
+    for x in range(-H, W, step):
+        sdraw.line([(x, H), (x + H, 0)], fill=(255, 255, 255, 10), width=26)
+    img = Image.alpha_composite(img.convert("RGBA"), stripe).convert("RGB")
+    return img, ImageDraw.Draw(img)
+
+
+def _draw_badge_pill(draw, text: str, accent_hex: str, xy=(60, 56)):
+    """Solid colored pill with bold-ish text — the vector replacement
+    for an emoji marker, guaranteed to render on every platform."""
+    font = _font(30)
+    pad_x, pad_y = 26, 14
+    tw = _text_w(draw, text, font)
+    x, y = xy
+    w, h = tw + pad_x * 2, 30 + pad_y * 2 - 12
+    draw.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=WHITE)
+    draw.text((x + pad_x, y + pad_y - 6), text, font=font, fill=accent_hex, stroke_width=1, stroke_fill=accent_hex)
+    return y + h  # bottom edge, for layout below it
+
+
+def _draw_wordmark(draw, xy=(60, 50)):
+    draw.text(xy, BRAND_NAME, font=_font(30), fill=GOLD)
+
+
+def _draw_brand_ribbon(img, draw):
+    """Solid footer ribbon spanning the width — replaces the old loose
+    corner caption, reads as an intentional template element."""
+    W, H = img.size
+    ribbon_h = 84
+    overlay = Image.new("RGBA", (W, ribbon_h), (0, 0, 0, 150))
+    img.paste(Image.alpha_composite(img.crop((0, H - ribbon_h, W, H)).convert("RGBA"), overlay), (0, H - ribbon_h))
+    draw = ImageDraw.Draw(img)
+    draw.text((44, H - ribbon_h + 16), BRAND_NAME, font=_font(30), fill=GOLD)
+    draw.text((44, H - ribbon_h + 50), BRAND_TAGLINE, font=_font(22), fill="#E5E7EB")
+    return draw
+
+
+def _initials_avatar(name: str, size=(170, 170)):
+    """Fallback when a crest URL is missing or fails to download — a
+    colored circle with the team's initials, so the card never just
+    shows a blank gap where a badge should be."""
+    initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
+    idx = sum(ord(c) for c in name) % len(_AVATAR_PALETTE)
+    color = _AVATAR_PALETTE[idx]
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([0, 0, size[0], size[1]], fill=_hex_to_rgb(color))
+    font = _font(int(size[1] * 0.4))
+    w = _text_w(draw, initials, font)
+    draw.text(((size[0] - w) / 2, size[1] * 0.28), initials, font=font, fill=WHITE)
+    return img
+
+
+def _crest_or_avatar(url: str, name: str, size=(170, 170)):
+    crest = _fetch_crest(url, size)
+    if crest is not None:
+        # White ring behind the crest so logos on transparent PNGs
+        # (dark or light) both sit on a consistent, clean disc.
+        ring = Image.new("RGBA", size, (0, 0, 0, 0))
+        rdraw = ImageDraw.Draw(ring)
+        rdraw.ellipse([0, 0, size[0], size[1]], fill=(255, 255, 255, 235))
+        cx = (size[0] - crest.width) // 2
+        cy = (size[1] - crest.height) // 2
+        ring.paste(crest, (cx, cy), crest)
+        return ring
+    return _initials_avatar(name, size)
+
+
+# ══════════════════════════════════════════════════════════════════
+# GENERIC CARD — VAR, transfer flashback, top scorers, win probability
+# ══════════════════════════════════════════════════════════════════
+
+def render_card(kind: str, marker: str, title: str, lines: list, source: str = None) -> str:
+    """`marker` is accepted for backwards compatibility with existing
+    call sites but is intentionally unused for on-image rendering
+    (see module docstring) — the badge pill below replaces it."""
+    img, draw = _base_canvas(kind)
+    W, H = CARD_SIZE
+    badge_text, accent = BADGES.get(kind, BADGES["default"])
+    badge_bottom = _draw_badge_pill(draw, badge_text, accent)
+
+    y = badge_bottom + 50
+    title_font = _font(56)
+    for line in textwrap.wrap(title, width=22):
+        _shadow_text(draw, (60, y), line, title_font, fill=WHITE)
+        y += 68
+
+    y += 24
+    # Ranked-list detection ("1. Player - 6") gets a numbered chip;
+    # everything else gets a small square bullet. Both read as
+    # intentional list styling instead of raw wrapped paragraphs.
+    body_font = _font(38)
+    for i, line in enumerate(lines):
+        rank = None
+        rest = line
+        parts = line.split(".", 1)
+        if len(parts) == 2 and parts[0].strip().isdigit():
+            rank, rest = parts[0].strip(), parts[1].strip()
+
+        chip_x = 60
+        if rank:
+            chip_d = 46
+            draw.ellipse([chip_x, y - 4, chip_x + chip_d, y - 4 + chip_d], fill=GOLD)
+            rw = _text_w(draw, rank, body_font)
+            draw.text((chip_x + (chip_d - rw) / 2, y - 2), rank, font=body_font, fill=INK)
+            text_x = chip_x + chip_d + 20
+        else:
+            draw.rectangle([chip_x, y + 14, chip_x + 14, y + 28], fill=GOLD)
+            text_x = chip_x + 34
+
+        for j, wrapped in enumerate(textwrap.wrap(rest, width=26) or [""]):
+            draw.text((text_x, y + j * 46), wrapped, font=body_font, fill=WHITE)
+        y += max(54, 46 * len(textwrap.wrap(rest, width=26) or [""])) + 16
+
+    if source:
+        draw.text((60, y + 10), f"Source: {source}", font=_font(26), fill="#D1D5DB")
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
+
+
+# ══════════════════════════════════════════════════════════════════
+# SCORE CARD — kickoff / goal / fulltime, with crest logos (or
+# initials-avatar fallback so a missing crest never leaves a gap)
+# ══════════════════════════════════════════════════════════════════
+
+def render_score_card(kind: str, marker: str, home_name: str, away_name: str,
+                       home_score, away_score, event_line: str = "",
+                       home_crest_url: str = "", away_crest_url: str = "") -> str:
+    img, draw = _base_canvas(kind)
+    W, H = CARD_SIZE
+    badge_text, accent = BADGES.get(kind, BADGES["default"])
+    _draw_badge_pill(draw, badge_text, accent)
+    _draw_wordmark(draw, xy=(W - 300, 62))
+
+    crest_size = (190, 190)
+    crest_y = 260
+    home_crest = _crest_or_avatar(home_crest_url, home_name, crest_size)
+    away_crest = _crest_or_avatar(away_crest_url, away_name, crest_size)
+    img.paste(home_crest, (110, crest_y), home_crest)
+    img.paste(away_crest, (W - 110 - crest_size[0], crest_y), away_crest)
+    draw = ImageDraw.Draw(img)
+
+    # Scoreline inside its own rounded chip so it reads as the focal
+    # point rather than floating text on a gradient.
+    score_text = f"{home_score}  -  {away_score}"
+    score_font = _font(96)
+    tw = _text_w(draw, score_text, score_font)
+    chip_w, chip_h = tw + 90, 130
+    chip_x = (W - chip_w) / 2
+    chip_y = crest_y + 30
+    draw.rounded_rectangle([chip_x, chip_y, chip_x + chip_w, chip_y + chip_h],
+                            radius=24, fill=(0, 0, 0, 90))
+    draw.text((chip_x + 45, chip_y + 14), score_text, font=score_font, fill=WHITE)
+
+    # Thin divider under the crests to visually separate identity from
+    # the event line below, like a real scoreboard graphic.
+    name_font = _font(34)
+    for name, cx in ((home_name, 205), (away_name, W - 205)):
+        ty = crest_y + crest_size[1] + 26
+        for i, line in enumerate(textwrap.wrap(name, width=14)[:2]):
+            lw = _text_w(draw, line, name_font)
+            draw.text((cx - lw / 2, ty + i * 42), line, font=name_font, fill=WHITE)
+
+    divider_y = crest_y + crest_size[1] + 120
+    draw.line([(120, divider_y), (W - 120, divider_y)], fill=(255, 255, 255, 90), width=2)
+
+    if event_line:
+        ev_font = _font(44)
+        y = divider_y + 34
+        for raw_line in event_line.split("\n"):
+            for line in textwrap.wrap(raw_line, width=30) or [""]:
+                lw = _text_w(draw, line, ev_font)
+                _shadow_text(draw, ((W - lw) / 2, y), line, ev_font, fill=GOLD)
+                y += 54
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
+
+
+# ══════════════════════════════════════════════════════════════════
+# PHOTO CARD — real downloaded photo (transfer news) branded to match
+# ══════════════════════════════════════════════════════════════════
+
+def render_photo_card(kind: str, headline: str, image_url: str,
+                       source: str = None, sub_line: str = None) -> str | None:
+    """
+    Builds a branded card from a REAL photo pulled from the news
+    source (e.g. the player/club photo attached to the ESPN/BBC/Sky
+    article), instead of a text-only generated card. This is what
+    transfer-news posts should use: people want to see who the player
+    is, and a solid-color text card can't show that.
+
+    Returns None if the image can't be downloaded/decoded — the
+    caller should fall back to render_card() in that case so a post
+    is never blocked on a flaky image URL.
+    """
+    photo = _fetch_image(image_url)
+    if photo is None:
+        return None
+
+    W, H = CARD_SIZE
+    # Center-crop to a square so any source aspect ratio fills the card
+    # without letterboxing, then upscale/downscale to CARD_SIZE.
+    pw, ph = photo.size
+    side = min(pw, ph)
+    left = (pw - side) // 2
+    top = (ph - side) // 2
+    photo = photo.crop((left, top, left + side, top + side)).resize(CARD_SIZE, Image.LANCZOS)
+
+    photo = photo.convert("RGBA")
+
+    # Bottom-weighted gradient so the headline block is always legible
+    # regardless of how bright/busy the source photo is, while the top
+    # of the photo (the player's face) stays untouched.
+    overlay = Image.new("RGBA", CARD_SIZE, (0, 0, 0, 0))
+    odraw = ImageDraw.Draw(overlay)
+    for y in range(H):
+        t = max(0, (y - H * 0.40) / (H * 0.60))
+        alpha = int(220 * t)
+        if alpha > 0:
+            odraw.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
+    img = Image.alpha_composite(photo, overlay)
+    draw = ImageDraw.Draw(img)
+
+    badge_text, accent = BADGES.get(kind, BADGES["transfer"])
+    _draw_badge_pill(draw, badge_text, accent)
+
+    title_font = _font(52)
+    y = H - 250
+    wrapped_lines = textwrap.wrap(headline, width=28)[:4]
+    y -= 68 * (len(wrapped_lines) - 1)
+    for line in wrapped_lines:
+        _shadow_text(draw, (60, y), line, title_font, fill=WHITE)
+        y += 68
+
+    if sub_line:
+        draw.text((60, y + 6), sub_line, font=_font(30), fill=GOLD)
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
