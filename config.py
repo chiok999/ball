@@ -36,6 +36,14 @@ MAX_POSTS_PER_HOUR  = int(os.getenv("MAX_POSTS_PER_HOUR",  "25"))
 # ── Railway keep-alive ────────────────────────────────────────────
 PORT = int(os.getenv("PORT", "8080"))
 
+# ── Persistent data directory ──────────────────────────────────────
+# Railway rebuilds a fresh container on every deploy, which wipes any
+# file written to the default local path (like state.json). Point this
+# at a mounted Railway Volume (e.g. "/data") to survive redeploys —
+# otherwise the bot has no memory of what it already posted and will
+# repost recent matches/goals/transfers after every update.
+DATA_DIR = os.getenv("DATA_DIR", ".")
+
 # ── World Cup mode ─────────────────────────────────────────────────
 # When True: quiet gaps (no real match event in FILLER_GAP_MINUTES) are
 # filled with World Cup content (top scorers / win probability).
@@ -59,6 +67,13 @@ TRANSFER_LEAGUES: dict[str, str] = {
     "usa.1": "MLS",
 }
 TRANSFER_POLL_EVERY_TICKS = int(os.getenv("TRANSFER_POLL_EVERY_TICKS", "5"))
+
+# Independent safety net from the dedup state: even if state.json is
+# ever lost (a redeploy without a persistent volume, a corrupted file,
+# etc.), a headline older than this is never posted as "breaking" news
+# no matter what the dedup memory thinks — this is what stops a state
+# wipe from replaying an entire morning's transfer stories hours later.
+TRANSFER_MAX_AGE_HOURS = int(os.getenv("TRANSFER_MAX_AGE_HOURS", "6"))
 
 # Dedicated cap for breaking transfer news specifically — a burst of
 # real transfer headlines (deadline day, several leagues at once) can
