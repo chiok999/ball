@@ -469,6 +469,77 @@ def render_score_card_premium(kind: str, home_name: str, away_name: str,
 
 
 
+def _draw_arrow(draw, x1, y, x2, color, width=4):
+    """Simple vector arrow (line + triangle head) — deliberately not a
+    unicode arrow glyph, since Aileron's coverage of those is spotty
+    and an arrow rendered as a tofu box looks worse than no arrow."""
+    draw.line([(x1, y), (x2 - 14, y)], fill=color, width=width)
+    draw.polygon([(x2, y), (x2 - 16, y - 9), (x2 - 16, y + 9)], fill=color)
+
+
+def render_transfer_flashback_card(player: str, from_club: str, to_club: str,
+                                    fee_line: str, date_line: str = "") -> str:
+    """
+    Premium stadium-styled replacement for the old flat transfer-
+    flashback card — matches the kickoff/goal/full-time look instead
+    of feeling like a separate, more basic template. No live crests
+    exist for this historical-dataset content, so both clubs get the
+    colored initials-avatar treatment consistently.
+    """
+    img, draw = _stadium_canvas("transfer")
+    W, H = CARD_SIZE
+
+    header = "TRANSFER FLASHBACK"
+    header_font = _font(28)
+    hw_est = sum(_text_w(draw, c, header_font) + 6 for c in header)
+    _spaced_text(draw, ((W - hw_est) / 2, 56), header, header_font, "#D4AF6A", tracking=6)
+
+    club_size = (170, 170)
+    club_y = 210
+    from_avatar = _initials_avatar(from_club, club_size)
+    to_avatar = _initials_avatar(to_club, club_size)
+    img.paste(from_avatar, (140, club_y), from_avatar)
+    img.paste(to_avatar, (W - 140 - club_size[0], club_y), to_avatar)
+    draw = ImageDraw.Draw(img)
+    _draw_arrow(draw, 140 + club_size[0] + 30, club_y + club_size[1] // 2,
+                W - 140 - club_size[0] - 30, "#D4AF6A", width=6)
+
+    name_font = _font(30)
+    for name, cx in ((from_club, 225), (to_club, W - 225)):
+        ty = club_y + club_size[1] + 18
+        for i, line in enumerate(textwrap.wrap(name, width=15)[:2]):
+            lw = _text_w(draw, line, name_font)
+            draw.text((cx - lw / 2, ty + i * 38), line, font=name_font, fill=WHITE)
+
+    player_font = _font(58)
+    pw = _text_w(draw, player, player_font)
+    _shadow_text(draw, ((W - pw) / 2, club_y + club_size[1] + 110), player, player_font, fill=WHITE)
+
+    fee_font = _font(48)
+    fw = _text_w(draw, fee_line, fee_font)
+    _shadow_text(draw, ((W - fw) / 2, club_y + club_size[1] + 190), fee_line, fee_font, fill="#D4AF6A")
+
+    if date_line:
+        draw.text((60, H - 150), date_line, font=_font(26), fill="#B8BEC7")
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
+
+
+# Two thresholds instead of one hard cutoff:
+#  >= STANDARD_MIN         -> crisp, full-detail treatment
+#  HARD_MIN..STANDARD_MIN  -> "standard" treatment: a mild blur pass
+#                             smooths blocky upscaling artifacts, then
+#                             an unsharp mask restores perceived edge
+#                             crispness — the same soften-then-sharpen
+#                             trick used to clean up any low-res photo.
+#                             Still a real photo, just not pin-sharp.
+#  <  HARD_MIN             -> too small/likely an icon — generated
+#                             card is more honest than a mangled photo
+HARD_MIN = 150
+STANDARD_MIN = 480
+
+
 def render_photo_card(kind: str, headline: str, image_url: str,
                        source: str = None, sub_line: str = None) -> str | None:
     """
@@ -478,13 +549,22 @@ def render_photo_card(kind: str, headline: str, image_url: str,
     transfer-news posts should use: people want to see who the player
     is, and a solid-color text card can't show that.
 
-    Returns None if the image can't be downloaded/decoded — the
-    caller should fall back to render_card() in that case so a post
-    is never blocked on a flaky image URL.
+    Returns None only if the image can't be downloaded/decoded, or is
+    below HARD_MIN in its shortest dimension — the caller should fall
+    back to render_card() in that case. Anything above HARD_MIN gets
+    used (see tiers above), so a small-but-real photo is still
+    preferred over a fallback text card whenever reasonably possible.
     """
     photo = _fetch_image(image_url)
     if photo is None:
         return None
+    source_dim = min(photo.size)
+    if source_dim < HARD_MIN:
+        print(f"[GRAPHICS] Source image {photo.size} below {HARD_MIN}px — using generated card instead")
+        return None
+    needs_softening = source_dim < STANDARD_MIN
+    if needs_softening:
+        print(f"[GRAPHICS] Source image {photo.size} below {STANDARD_MIN}px — using standard-quality treatment")
 
     W, H = CARD_SIZE
     # Center-crop to a square so any source aspect ratio fills the card
@@ -495,11 +575,26 @@ def render_photo_card(kind: str, headline: str, image_url: str,
     top = (ph - side) // 2
     photo = photo.crop((left, top, left + side, top + side)).resize(CARD_SIZE, Image.LANCZOS)
 
+    if needs_softening:
+        # Soften-then-sharpen: a light blur smooths the blocky edges an
+        # upscale produces from a small source, then an unsharp mask
+        # brings back perceived edge crispness on top of the smoothed
+        # base — a real photo that reads as "acceptable web quality"
+        # rather than visibly pixelated.
+        photo = photo.filter(ImageFilter.GaussianBlur(1.4))
+        photo = photo.filter(ImageFilter.UnsharpMask(radius=2, percent=130, threshold=2))
+
     photo = photo.convert("RGBA")
 
     # Bottom-weighted gradient so the headline block is always legible
     # regardless of how bright/busy the source photo is, while the top
-    # of the photo (the player's face) stays untouched.
+    # of the photo (the player's face) stays untouched. Slightly darker
+    # overall on the standard tier — a touch more shadow helps hide any
+    # remaining softness without hiding the subject.
+    base_darken = 40 if needs_softening else 0
+    if base_darken:
+        dark = Image.new("RGBA", CARD_SIZE, (0, 0, 0, base_darken))
+        photo = Image.alpha_composite(photo, dark)
     overlay = Image.new("RGBA", CARD_SIZE, (0, 0, 0, 0))
     odraw = ImageDraw.Draw(overlay)
     for y in range(H):
