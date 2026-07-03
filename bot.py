@@ -144,12 +144,18 @@ def _transfer_rate_limit_ok() -> bool:
     bot posts (goals, kickoffs, etc. are unaffected)."""
     global _transfer_post_timestamps
     now = time.time()
-    window_ago = now - config.TRANSFER_WINDOW_MINUTES * 60
+    # getattr with defaults: if config.py on the deployed environment is
+    # older than bot.py (e.g. only one of the two files got redeployed),
+    # this must never crash the poll loop — just fall back to the safe
+    # default (2 per 30 min) instead of raising AttributeError.
+    max_posts = getattr(config, "TRANSFER_MAX_POSTS_PER_WINDOW", 2)
+    window_min = getattr(config, "TRANSFER_WINDOW_MINUTES", 30)
+    window_ago = now - window_min * 60
     _transfer_post_timestamps = [t for t in _transfer_post_timestamps if t > window_ago]
-    if len(_transfer_post_timestamps) >= config.TRANSFER_MAX_POSTS_PER_WINDOW:
+    if len(_transfer_post_timestamps) >= max_posts:
         print(
-            f"[TRANSFERS] ⚠️  Cap reached ({config.TRANSFER_MAX_POSTS_PER_WINDOW} per "
-            f"{config.TRANSFER_WINDOW_MINUTES}min) — holding remaining stories for next window"
+            f"[TRANSFERS] ⚠️  Cap reached ({max_posts} per "
+            f"{window_min}min) — holding remaining stories for next window"
         )
         return False
     return True
@@ -423,7 +429,7 @@ def process_match(match: dict):
                 _post_if_new(key, poster.fmt_var_disallowed(match, v), image_path=img)
 
     # ── Kick-off ──────────────────────────────────────────────────
-    if config.POST_KICKOFF and status == "IN_PLAY":
+    if config.POST_KICKOFF and status == "IN_PLAY" and not _already_posted(_key_kickoff(mid)):
         kickoff_match = {**match, "score": {
             "halfTime": {"home": None, "away": None},
             "fullTime": {"home": 0, "away": 0},
@@ -464,7 +470,7 @@ def process_match(match: dict):
             _post_if_new(_key_extratime(mid), poster.fmt_extratime(match))
 
     # ── Full time ─────────────────────────────────────────────────
-    if config.POST_FULLTIME and status == "FINISHED":
+    if config.POST_FULLTIME and status == "FINISHED" and not _already_posted(_key_fulltime(mid)):
         if match.get("_went_to_penalties"):
             print(f"[BOT] 🏁 Full time (penalties): {hname} vs {aname}")
         elif match.get("_went_to_et"):
