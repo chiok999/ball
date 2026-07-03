@@ -53,8 +53,30 @@ def _get_json(url: str, timeout: int = 10) -> dict | None:
     return None
 
 
+_MEDIA_NS = "{http://search.yahoo.com/mrss/}"
+
+
+def _rss_image(item) -> str:
+    """Pulls an article image out of an RSS <item> if one is present.
+    BBC/Sky both commonly carry one of: <media:thumbnail url="...">,
+    <media:content url="...">, or <enclosure url="..." type="image/*">.
+    Returns "" if none is found — caller treats that as no photo."""
+    thumb = item.find(f"{_MEDIA_NS}thumbnail")
+    if thumb is not None and thumb.get("url"):
+        return thumb.get("url")
+    content = item.find(f"{_MEDIA_NS}content")
+    if content is not None and content.get("url"):
+        return content.get("url")
+    for enc in item.findall("enclosure"):
+        if (enc.get("type") or "").startswith("image") and enc.get("url"):
+            return enc.get("url")
+    return ""
+
+
 def _get_rss(url: str, timeout: int = 10) -> list[dict]:
-    """Minimal RSS 2.0 parser via stdlib — returns [{title, link}, ...]."""
+    """Minimal RSS 2.0 parser via stdlib — returns
+    [{title, link, image}, ...]. `image` is "" when the feed doesn't
+    carry one for that item."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code != 200:
@@ -66,7 +88,7 @@ def _get_rss(url: str, timeout: int = 10) -> list[dict]:
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
             if title:
-                items.append({"title": title, "link": link})
+                items.append({"title": title, "link": link, "image": _rss_image(item)})
         return items
     except ET.ParseError as e:
         print(f"[TRANSFERS] RSS parse error ({url[:40]}): {e}")
@@ -94,6 +116,19 @@ def _guess_league(headline: str) -> str:
     return "Football"
 
 
+def _espn_article_image(article: dict) -> str:
+    """ESPN news articles typically carry an "images" list, each with
+    a "url" (and sometimes multiple crops/sizes). Defensively parsed —
+    any shape mismatch just returns "" and the caller falls back to a
+    generated card rather than crashing."""
+    images = article.get("images") or []
+    for im in images:
+        url = im.get("url")
+        if url:
+            return url
+    return ""
+
+
 def _espn_candidates() -> list[dict]:
     items = []
     for slug, league_name in config.TRANSFER_LEAGUES.items():
@@ -109,6 +144,7 @@ def _espn_candidates() -> list[dict]:
                 "headline":  headline,
                 "league":    league_name,
                 "link":      (article.get("links", {}).get("web", {}) or {}).get("href", ""),
+                "image":     _espn_article_image(article),
                 "source":    "ESPN",
             })
     return items
@@ -124,6 +160,7 @@ def _bbc_candidates() -> list[dict]:
             "headline": entry["title"],
             "league":   _guess_league(entry["title"]),
             "link":     entry["link"],
+            "image":    entry.get("image", ""),
             "source":   "BBC Sport",
         })
     return items
@@ -143,6 +180,7 @@ def _sky_candidates() -> list[dict]:
             "headline": entry["title"],
             "league":   _guess_league(entry["title"]),
             "link":     link,
+            "image":    entry.get("image", ""),
             "source":   "Sky Sports",
         })
     return items
