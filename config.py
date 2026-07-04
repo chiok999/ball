@@ -85,10 +85,10 @@ TRANSFER_MAX_AGE_HOURS = int(os.getenv("TRANSFER_MAX_AGE_HOURS", "6"))
 # (deadline day, a big World Cup night) can otherwise post many times
 # in a row even though MAX_POSTS_PER_HOUR hasn't been hit yet, which
 # reads as spammy and risks a Facebook flag. Per your request: max 2
-# news posts (with image) every 30 minutes to keep reach healthy
+# news posts (with image) every 15 minutes to keep reach healthy
 # without flooding the page.
 TRANSFER_MAX_POSTS_PER_WINDOW = int(os.getenv("TRANSFER_MAX_POSTS_PER_WINDOW", "2"))
-TRANSFER_WINDOW_MINUTES       = int(os.getenv("TRANSFER_WINDOW_MINUTES",       "30"))
+TRANSFER_WINDOW_MINUTES       = int(os.getenv("TRANSFER_WINDOW_MINUTES",       "15"))
 
 # ── VAR / disallowed goals ────────────────────────────────────────────
 POST_VAR_DISALLOWED  = os.getenv("POST_VAR_DISALLOWED", "true").lower() == "true"
