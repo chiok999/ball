@@ -47,6 +47,9 @@ def get_top_scorers(league_slug: str = "fifa.world", limit: int = 5) -> list[dic
         return None
     try:
         entries = data.get("athletes", []) or data.get("stats", {}).get("categories", [{}])[0].get("leaders", [])
+        if not entries:
+            print("[WORLDCUP] ⚠️  Response had no 'athletes' or 'stats.categories[0].leaders' — endpoint shape may have changed")
+            return None
         scorers = []
         for i, entry in enumerate(entries[:limit], start=1):
             athlete = entry.get("athlete", entry)
@@ -57,7 +60,11 @@ def get_top_scorers(league_slug: str = "fifa.world", limit: int = 5) -> list[dic
             if goals is None:
                 continue
             scorers.append({"rank": i, "player": name, "team": team, "goals": int(goals)})
-        return scorers or None
+        if not scorers:
+            print(f"[WORLDCUP] ⚠️  Parsed {len(entries)} entries but none had a readable 'goals' stat — field name may have changed")
+            return None
+        print(f"[WORLDCUP] Top scorers: parsed {len(scorers)} entries OK")
+        return scorers
     except Exception as e:
         print(f"[WORLDCUP] Top scorers parse error: {e}")
         return None
