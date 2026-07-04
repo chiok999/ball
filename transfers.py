@@ -138,66 +138,102 @@ def _is_fresh(published) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════
-# CATEGORY KEYWORDS — order matters: checked top to bottom, first
+# CATEGORY PATTERNS — order matters: checked top to bottom, first
 # match wins, so a headline that could fit two buckets (rare) lands
 # in whichever is listed first.
+#
+# NOTE ON WHY THESE ARE REGEX, NOT LITERAL PHRASES:
+# The original version matched exact literal phrases ("signs",
+# "knocked out", "new contract"). Real headlines use every tense and
+# phrasing under the sun — "agreeing a deal to sign", "prefer to
+# join" (no "s"), "knock out" (present tense, not "knocked"), "extend
+# his contract" (not "new contract"). A literal-phrase list silently
+# drops almost everything that doesn't happen to use that exact
+# wording, which is why real days with plenty of transfer/World Cup
+# stories on the source sites were producing almost no matches. Each
+# pattern below uses \b word-stems with optional tense endings
+# (s|ed|ing) so "sign/signs/signing/signed" all match from one
+# pattern, same idea for join/agree/reject/extend/etc.
 # ══════════════════════════════════════════════════════════════════
 
-_MANAGER_KEYWORDS = (
-    "sacked", "sacks", "sacking", "steps down", "stepped down",
-    "resigns", "resignation", "parts ways", "part ways",
-    "relieved of", "relieved of his duties", "fired as manager",
-    "appointed as", "appoints", "appointed head coach", "new head coach",
-    "named manager", "named head coach", "confirmed as manager",
-    "takes over as manager", "interim manager", "interim boss",
-)
+_MANAGER_PATTERNS = [
+    r"\bsack(?:ed|s|ing)?\b", r"\bfired\b",
+    r"\bstep(?:s|ped)?\s+down\b", r"\bresign(?:s|ed|ation)?\b",
+    r"\bpart(?:s|ed)?\s+ways\b", r"\brelieved\s+of\b",
+    r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?)\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
+    r"\bnew\s+(?:manager|head\s+coach|boss)\b",
+    r"\btakes?\s+over\s+as\s+(?:manager|coach|boss)\b",
+    r"\binterim\s+(?:manager|boss|coach)\b",
+]
 
-_WORLDCUP_KEYWORDS = (
-    "retires from international", "announces international retirement",
-    "hangs up his boots", "international retirement",
-    "knocked out", "crash out", "crashed out", "eliminated from",
-    "exit the world cup", "exit world cup", "dumped out",
-    "through to the final", "reach the semi-final", "reach the quarter-final",
-    "into the semi-final", "into the quarter-final", "book their place",
-    "qualify for the last", "advance to the last", "world cup qualifier",
-    "world cup draw", "world cup fixture", "world cup preview",
-    "next up in the world cup", "kick off their world cup",
-)
+_WORLDCUP_PATTERNS = [
+    r"\bretir(?:e|es|ed|ement)\b[^.]{0,30}\binternational\b",
+    r"\bhangs?\s+up\s+(?:his|her|their)\s+boots\b",
+    r"\bknock(?:s|ed)?\s+out\b", r"\bcrash(?:es|ed)?\s+out\b",
+    r"\belimin(?:ate|ates|ated|ation)\b", r"\bdump(?:s|ed)?\s+out\b",
+    r"\bexit(?:s|ed)?\s+(?:the\s+)?world\s+cup\b",
+    r"\bthrough\s+to\s+the\s+(?:final|semi|quarter)",
+    r"\breach(?:es|ed)?\s+the\s+(?:semi|quarter|final)",
+    r"\binto\s+the\s+(?:semi|quarter|final|last\s+16)",
+    r"\bbook(?:s|ed)?\s+(?:their|a)\s+place\b",
+    r"\bqualif(?:y|ies|ied|ication)\b[^.]{0,25}world\s+cup",
+    r"\bworld\s+cup\s+(?:draw|fixture|preview|qualifier)\b",
+    r"\blast\s+16\b",
+]
 
-_INTERVIEW_KEYWORDS = (
-    "reacts to", "speaks after", "post-match press conference",
-    "post-match interview", "speaks to media", "press conference:",
-    "hails", "blasts", "praises", "on the win", "on the defeat",
-    "on the loss", "reaction:", "responds to criticism",
-    "full interview", "exclusive interview",
-)
+_INTERVIEW_PATTERNS = [
+    r"\breact(?:s|ed|ion)?\s+to\b", r"\bspeaks?\s+(?:after|to\s+media)\b",
+    r"\bpress\s+conference\b", r"\bhail(?:s|ed)\b", r"\bblast(?:s|ed)\b",
+    r"\bprais(?:es|ed)\b", r"\bon\s+the\s+(?:win|defeat|loss|draw)\b",
+    r"\bexclusive\s+interview\b", r"\bfull\s+interview\b",
+    r"\bresponds?\s+to\s+criticism\b",
+]
 
-_TRANSFER_KEYWORDS = (
-    "signs", "signing", "sign for", "completes move", "completes transfer",
-    "completes his move", "completes a move", "seals move", "seals a move",
-    "here we go", "joins", "loan move", "loan deal", "on loan",
-    "medical", "confirmed transfer", "official transfer", "transfer fee",
-    "transfer deal", "unveiled", "new contract", "deal agreed",
-    "agrees to join", "set to join", "close to joining", "transfer news",
-    "rumours", "rumors", "gossip", "move to", "moves to", "switches to",
-)
+_TRANSFER_PATTERNS = [
+    r"\bsign(?:s|ing|ed)?\b", r"\bjoin(?:s|ing|ed)?\b",
+    r"\bmove(?:s|d)?\s+to\b", r"\bswitch(?:es|ed)?\s+to\b",
+    r"\bloan(?:ed)?\b", r"\bmedical\b", r"\bunveil(?:s|ed|ing)?\b",
+    r"\btransfer(?:s|red)?\b",
+    r"\bbid(?:s)?\b", r"\btarget(?:s|ed|ing)?\b", r"\blinked\s+with\b",
+    r"\ben?quiry\b", r"\breject(?:s|ed)?\b",
+    r"\b(?:extend|extends|extended|renew|renews|renewed)\b[^.]{0,25}\bcontract\b",
+    r"\bpersonal\s+terms\b", r"\bhere\s+we\s+go\b",
+    r"\brumou?rs?\b", r"\bgossip\b",
+    r"\bclose\s+to\s+(?:joining|signing|a\s+move|a\s+deal)\b",
+    r"\bagree(?:s|d)?\s+(?:a\s+)?(?:deal|fee|terms)\b",
+    r"\bcomplete(?:s|d)?\s+(?:a\s+)?(?:move|transfer|signing)\b",
+    r"\bconfirm(?:s|ed)?\s+(?:the\s+)?(?:signing|transfer|deal|move)\b",
+    r"\bwant(?:s|ed)?\s+to\s+(?:sign|join)\b",
+    r"\bprefer(?:s|red)?\s+to\s+join\b", r"\bset\s+to\s+join\b",
+]
 
-# category -> (keywords, badge/graphics kind, display label used in captions)
+# category -> (compiled patterns, graphics kind, display label)
 _CATEGORIES = (
-    ("manager",  _MANAGER_KEYWORDS,  "Manager News"),
-    ("worldcup", _WORLDCUP_KEYWORDS, "World Cup News"),
-    ("interview", _INTERVIEW_KEYWORDS, "Post-Match Reaction"),
-    ("transfer", _TRANSFER_KEYWORDS,  "Transfer News"),
+    ("manager",   [re.compile(p, re.I) for p in _MANAGER_PATTERNS],   "Manager News"),
+    ("worldcup",  [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],  "World Cup News"),
+    ("interview", [re.compile(p, re.I) for p in _INTERVIEW_PATTERNS], "Post-Match Reaction"),
+    ("transfer",  [re.compile(p, re.I) for p in _TRANSFER_PATTERNS],  "Transfer News"),
 )
 
+# Rolling sample of headlines that matched NO category this poll, so a
+# quiet day can be diagnosed at a glance instead of guessing — capped
+# small so logs don't flood. Cleared at the top of every check_new().
+_UNMATCHED_SAMPLE_CAP = 8
+_unmatched_sample: list = []
 
-def _classify_headline(headline: str) -> tuple:
+
+
+def _classify_headline(headline: str, source: str = "") -> tuple:
     """Returns (category_key, label) for the first matching bucket, or
-    (None, None) if the headline doesn't fit any tracked category."""
-    low = headline.lower()
-    for key, keywords, label in _CATEGORIES:
-        if any(kw in low for kw in keywords):
+    (None, None) if the headline doesn't fit any tracked category. On
+    a miss, stashes the headline (capped) so check_new() can print a
+    sample of what's being dropped — the fastest way to see whether
+    the patterns need widening again in the future."""
+    for key, patterns, label in _CATEGORIES:
+        if any(p.search(headline) for p in patterns):
             return key, label
+    if len(_unmatched_sample) < _UNMATCHED_SAMPLE_CAP:
+        _unmatched_sample.append(f"{source}: {headline}" if source else headline)
     return None, None
 
 
@@ -341,7 +377,7 @@ def _espn_candidates() -> list[dict]:
         for article in data.get("articles", []):
             headline = article.get("headline", "")
             raw_count += 1 if headline else 0
-            category, label = _classify_headline(headline) if headline else (None, None)
+            category, label = _classify_headline(headline, "ESPN") if headline else (None, None)
             if not category:
                 continue
             items.append({
@@ -363,7 +399,7 @@ def _bbc_candidates() -> list[dict]:
     items = []
     raw = _get_rss(BBC_FOOTBALL_RSS)
     for entry in raw:
-        category, label = _classify_headline(entry["title"])
+        category, label = _classify_headline(entry["title"], "BBC")
         if not category:
             continue
         items.append({
@@ -390,8 +426,7 @@ def _sky_candidates() -> list[dict]:
         # Mixed feed (darts/cricket/F1/etc.) — keep football only
         if "/football/" not in link:
             continue
-        raw_football += 1
-        category, label = _classify_headline(entry["title"])
+        category, label = _classify_headline(entry["title"], "Sky")
         if not category:
             continue
         items.append({
@@ -417,7 +452,7 @@ def _guardian_candidates() -> list[dict]:
     # available, same "largest wins" rule ESPN's own image list uses.
     raw = _get_rss(GUARDIAN_FOOTBALL_RSS, image_fn=_guardian_image)
     for entry in raw:
-        category, label = _classify_headline(entry["title"])
+        category, label = _classify_headline(entry["title"], "Guardian")
         if not category:
             continue
         items.append({
@@ -441,7 +476,7 @@ def _90min_candidates() -> list[dict]:
     # needed — every entry is in-scope, same as BBC/Guardian.
     raw = _get_rss(NINETY_MIN_RSS)
     for entry in raw:
-        category, label = _classify_headline(entry["title"])
+        category, label = _classify_headline(entry["title"], "90min")
         if not category:
             continue
         items.append({
@@ -470,6 +505,7 @@ def check_new(already_seen: set) -> list[dict]:
     """
     candidates = []
     per_source_counts = {}
+    _unmatched_sample.clear()
     for fn in (_espn_candidates, _bbc_candidates, _sky_candidates, _guardian_candidates, _90min_candidates):
         try:
             result = fn()
@@ -505,4 +541,8 @@ def check_new(already_seen: set) -> list[dict]:
     )
     if stale_ages:
         print(f"[NEWS] stale item ages: {stale_ages}")
+    if _unmatched_sample:
+        print(f"[NEWS] sample of headlines that matched NO category this poll "
+              f"(widen the patterns if these look like real transfer/manager/"
+              f"World Cup/reaction stories): {_unmatched_sample}")
     return new_items
