@@ -16,7 +16,8 @@ import io
 import time
 import requests
 
-CLUB_ELO_API = "http://api.clubelo.com"
+CLUB_ELO_API = "https://api.clubelo.com"
+CLUB_ELO_API_FALLBACK = "http://api.clubelo.com"  # only used if HTTPS itself fails
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -34,8 +35,19 @@ def _fetch_today_ratings() -> dict[str, float]:
     if "ratings" in _cache and (now - _cache["ratings"][0]) < _CACHE_TTL:
         return _cache["ratings"][1]
 
+    date_path = time.strftime('%Y-%m-%d')
+    r = None
+    for base in (CLUB_ELO_API, CLUB_ELO_API_FALLBACK):
+        try:
+            r = requests.get(f"{base}/{date_path}", headers=HEADERS, timeout=15)
+            break
+        except Exception as e:
+            print(f"[ELO] ❌ {base} failed ({e}); trying fallback" if base == CLUB_ELO_API else f"[ELO] ❌ {e}")
+            r = None
+    if r is None:
+        return _cache.get("ratings", (0, {}))[1]
+
     try:
-        r = requests.get(f"{CLUB_ELO_API}/{time.strftime('%Y-%m-%d')}", headers=HEADERS, timeout=10)
         if r.status_code != 200:
             print(f"[ELO] HTTP {r.status_code}")
             return _cache.get("ratings", (0, {}))[1]
