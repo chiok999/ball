@@ -297,7 +297,14 @@ def maybe_post_filler(matches: list):
                     graphics.render_card, "stats", "🚩",
                     f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}", lines,
                 )
-                _post_now(poster.fmt_win_probability(m, probs), image_path=img)
+                if _post_now(poster.fmt_win_probability(m, probs), image_path=img):
+                    return
+            else:
+                print("[FILLER] ⚠️  Win probability unavailable this cycle (ClubElo unreachable or team ratings unresolved)")
+        else:
+            print("[FILLER] ⚠️  No upcoming World Cup fixture to show win probability for")
+
+    print("[FILLER] ⚠️  Nothing posted this cycle — both top scorers and win probability unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════
