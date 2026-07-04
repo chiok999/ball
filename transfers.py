@@ -398,6 +398,7 @@ def check_new(already_seen: set) -> list[dict]:
             print(f"[NEWS] ⚠️  {fn.__name__} failed: {e}")
 
     dedup_skipped, stale_skipped = 0, 0
+    stale_ages = []
     new_items, seen_this_pass = [], set()
     for item in candidates:
         if item["key"] in already_seen or item["key"] in seen_this_pass:
@@ -405,6 +406,12 @@ def check_new(already_seen: set) -> list[dict]:
             continue
         if not _is_fresh(item.get("published")):
             stale_skipped += 1
+            pub = item.get("published")
+            if pub is not None:
+                age_h = round((datetime.now(timezone.utc) - pub).total_seconds() / 3600, 1)
+                stale_ages.append(f"{item['source']}:{age_h}h")
+            else:
+                stale_ages.append(f"{item['source']}:UNPARSEABLE")
             continue  # too old to post as "breaking" regardless of dedup state
         seen_this_pass.add(item["key"])
         new_items.append(item)
@@ -414,4 +421,6 @@ def check_new(already_seen: set) -> list[dict]:
         f"total_candidates={len(candidates)} already_seen_skipped={dedup_skipped} "
         f"stale_skipped={stale_skipped} new_items={len(new_items)}"
     )
+    if stale_ages:
+        print(f"[NEWS] stale item ages: {stale_ages}")
     return new_items
