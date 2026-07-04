@@ -233,6 +233,7 @@ def _key_goal(mid: str, g: dict, idx: int = 0) -> str:
     return f"goal:{mid}:{g['scorer']['name']}:{minute}"
 def _key_extratime(mid: str)            -> str: return f"extratime:{mid}"
 def _key_fulltime(mid: str)             -> str: return f"ft:{mid}"
+def _key_elo_update(mid: str)           -> str: return f"elo_updated:{mid}"
 def _key_var(mid: str, v: dict)         -> str: return f"var:{mid}:{v.get('minute','?')}:{v.get('player','?')}"
 
 
@@ -456,6 +457,11 @@ def process_match(match: dict):
             _post_if_new(_key_extratime(mid), poster.fmt_extratime(match))
 
     # ── Full time ─────────────────────────────────────────────────
+    if status == "FINISHED" and not _already_posted(_key_elo_update(mid)):
+        h_sc, a_sc = match["score"]["fullTime"].get("home"), match["score"]["fullTime"].get("away")
+        elo.record_result(hname, aname, h_sc, a_sc, home_advantage=config.ELO_HOME_ADVANTAGE)
+        _mark_posted(_key_elo_update(mid))
+
     if config.POST_FULLTIME and status == "FINISHED" and not _already_posted(_key_fulltime(mid)):
         if match.get("_went_to_penalties"):
             print(f"[BOT] 🏁 Full time (penalties): {hname} vs {aname}")
