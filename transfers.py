@@ -9,13 +9,14 @@ Covers everything happening right now, never the past:
   - Post-match reactions (interviews, press conferences, reactions to
     a result that just happened)
 
-Four free sources, combined and deduped, posted the moment something
+Five free sources, combined and deduped, posted the moment something
 new is found — not tied to any filler clock:
 
   1. ESPN  /news endpoint (per league + World Cup slug) — site.api.espn.com
   2. BBC Sport Football RSS                             — feeds.bbci.co.uk
   3. Sky Sports RSS (mixed feed, URL-filtered to /football/)
   4. The Guardian Football RSS                          — theguardian.com
+  5. 90min RSS                                          — 90min.com
 
 All native/free, no scraping libraries, no paid API. RSS is parsed with
 the standard library (xml.etree) so no new dependency is needed.
@@ -41,6 +42,7 @@ ESPN_NEWS_API = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 BBC_FOOTBALL_RSS = "https://feeds.bbci.co.uk/sport/football/rss.xml"
 SKY_SPORTS_RSS = "https://www.skysports.com/rss/12040"  # mixed feed — filtered to /football/ below
 GUARDIAN_FOOTBALL_RSS = "https://www.theguardian.com/football/rss"
+NINETY_MIN_RSS = "https://www.90min.com/posts.rss"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -433,6 +435,30 @@ def _guardian_candidates() -> list[dict]:
     return items
 
 
+def _90min_candidates() -> list[dict]:
+    items = []
+    # 90min is football-only (unlike Sky's mixed feed), so no URL filtering
+    # needed — every entry is in-scope, same as BBC/Guardian.
+    raw = _get_rss(NINETY_MIN_RSS)
+    for entry in raw:
+        category, label = _classify_headline(entry["title"])
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:90min:{entry['link'] or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     entry["link"],
+            "image":    entry.get("image", ""),
+            "published": entry.get("published"),
+            "source":   "90min",
+        })
+    print(f"[NEWS] 90min: {len(raw)} RSS entries fetched, {len(items)} matched a category")
+    return items
+
+
 def check_new(already_seen: set) -> list[dict]:
     """
     Polls all three sources, returns news items (transfers, manager
@@ -444,7 +470,7 @@ def check_new(already_seen: set) -> list[dict]:
     """
     candidates = []
     per_source_counts = {}
-    for fn in (_espn_candidates, _bbc_candidates, _sky_candidates, _guardian_candidates):
+    for fn in (_espn_candidates, _bbc_candidates, _sky_candidates, _guardian_candidates, _90min_candidates):
         try:
             result = fn()
             per_source_counts[fn.__name__] = len(result)
