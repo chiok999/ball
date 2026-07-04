@@ -420,7 +420,7 @@ def process_match(match: dict):
         }}
         print(f"[BOT] 📌 Kickoff: {hname} vs {aname}")
         img = _safe_image(
-            graphics.render_score_card_premium, "kickoff", hname, aname, 0, 0,
+            graphics.render_scoreboard_card, "kickoff", hname, aname, 0, 0,
             competition=match.get("_comp_name", ""),
             status_label="KICK-OFF", show_pulse=True,
             home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
@@ -440,7 +440,7 @@ def process_match(match: dict):
                 if assist:
                     event_line += f" (assist: {assist})"
                 img = _safe_image(
-                    graphics.render_score_card_premium, "goal", hname, aname, h_sc, a_sc,
+                    graphics.render_scoreboard_card, "goal", hname, aname, h_sc, a_sc,
                     competition=match.get("_comp_name", ""),
                     event_line=event_line,
                     status_label=f"{poster._minute(goal['minute'])}' \u2022 LIVE", show_pulse=True,
@@ -476,7 +476,7 @@ def process_match(match: dict):
         elif match.get("_went_to_et"):
             status_label = "FULL TIME \u2022 AET"
         img = _safe_image(
-            graphics.render_score_card_premium, "fulltime", hname, aname, h_sc or 0, a_sc or 0,
+            graphics.render_scoreboard_card, "fulltime", hname, aname, h_sc or 0, a_sc or 0,
             competition=match.get("_comp_name", ""),
             status_label=status_label, show_pulse=False,
             home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
