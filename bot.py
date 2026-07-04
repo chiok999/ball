@@ -507,7 +507,17 @@ def _seed_finished(matches: list):
 def main():
     global _last_event_post_time
     _load_state()
-    _last_event_post_time = time.time()
+    # Resuming the filler clock from persisted state, not from "now":
+    # blindly stamping time.time() here meant every restart re-armed the
+    # 30-min WORLD_CUP_MODE filler wait from zero, regardless of how long
+    # the page had actually been quiet — on a debugging session with
+    # frequent redeploys this meant filler basically never got a chance
+    # to fire. _events[key] is set to time.time() on every real post
+    # (via _mark_posted) and during startup seeding, so the most recent
+    # value in there is a true "time since last real thing happened,"
+    # surviving restarts. Empty state (first-ever boot) falls back to
+    # 0.0, which makes filler eligible on the very first tick.
+    _last_event_post_time = max(_events.values()) if _events else 0.0
     _start_keepalive()
 
     print("[STATE] 🌱 Seeding finished matches on startup...")
