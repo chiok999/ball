@@ -465,9 +465,9 @@ def check_new(already_seen: set) -> list[dict]:
             pub = item.get("published")
             if pub is not None:
                 age_h = round((datetime.now(timezone.utc) - pub).total_seconds() / 3600, 1)
-                stale_ages.append(f"{item['source']}:{age_h}h")
+                stale_ages.append(f"{item['source']}/{item['category']}:{age_h}h")
             else:
-                stale_ages.append(f"{item['source']}:UNPARSEABLE")
+                stale_ages.append(f"{item['source']}/{item['category']}:UNPARSEABLE")
             continue  # too old to post as "breaking" regardless of dedup state
         seen_this_pass.add(item["key"])
         new_items.append(item)
