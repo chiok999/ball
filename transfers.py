@@ -301,12 +301,14 @@ def _espn_candidates() -> list[dict]:
     slugs = dict(config.TRANSFER_LEAGUES)
     slugs[config.WORLD_CUP_SLUG] = "World Cup"
 
+    raw_count = 0
     for slug, league_name in slugs.items():
         data = _get_json(f"{ESPN_NEWS_API}/{slug}/news")
         if not data:
             continue
         for article in data.get("articles", []):
             headline = article.get("headline", "")
+            raw_count += 1 if headline else 0
             category, label = _classify_headline(headline) if headline else (None, None)
             if not category:
                 continue
@@ -321,12 +323,14 @@ def _espn_candidates() -> list[dict]:
                 "published": _parse_iso(article.get("published") or article.get("lastModified")),
                 "source":    "ESPN",
             })
+    print(f"[NEWS] ESPN: {raw_count} headlines fetched, {len(items)} matched a category")
     return items
 
 
 def _bbc_candidates() -> list[dict]:
     items = []
-    for entry in _get_rss(BBC_FOOTBALL_RSS):
+    raw = _get_rss(BBC_FOOTBALL_RSS)
+    for entry in raw:
         category, label = _classify_headline(entry["title"])
         if not category:
             continue
@@ -341,16 +345,20 @@ def _bbc_candidates() -> list[dict]:
             "published": entry.get("published"),
             "source":   "BBC Sport",
         })
+    print(f"[NEWS] BBC: {len(raw)} RSS entries fetched, {len(items)} matched a category")
     return items
 
 
 def _sky_candidates() -> list[dict]:
     items = []
-    for entry in _get_rss(SKY_SPORTS_RSS):
+    raw_all = _get_rss(SKY_SPORTS_RSS)
+    raw_football = 0
+    for entry in raw_all:
         link = entry["link"]
         # Mixed feed (darts/cricket/F1/etc.) — keep football only
         if "/football/" not in link:
             continue
+        raw_football += 1
         category, label = _classify_headline(entry["title"])
         if not category:
             continue
@@ -365,6 +373,7 @@ def _sky_candidates() -> list[dict]:
             "published": entry.get("published"),
             "source":   "Sky Sports",
         })
+    print(f"[NEWS] Sky: {len(raw_all)} RSS entries fetched ({raw_football} football), {len(items)} matched a category")
     return items
 
 
@@ -378,18 +387,31 @@ def check_new(already_seen: set) -> list[dict]:
     dedup state — this module never surfaces the past.
     """
     candidates = []
+    per_source_counts = {}
     for fn in (_espn_candidates, _bbc_candidates, _sky_candidates):
         try:
-            candidates.extend(fn())
+            result = fn()
+            per_source_counts[fn.__name__] = len(result)
+            candidates.extend(result)
         except Exception as e:
+            per_source_counts[fn.__name__] = f"FAILED: {e}"
             print(f"[NEWS] ⚠️  {fn.__name__} failed: {e}")
 
+    dedup_skipped, stale_skipped = 0, 0
     new_items, seen_this_pass = [], set()
     for item in candidates:
         if item["key"] in already_seen or item["key"] in seen_this_pass:
+            dedup_skipped += 1
             continue
         if not _is_fresh(item.get("published")):
+            stale_skipped += 1
             continue  # too old to post as "breaking" regardless of dedup state
         seen_this_pass.add(item["key"])
         new_items.append(item)
+
+    print(
+        f"[NEWS] poll summary: candidates_by_source={per_source_counts} "
+        f"total_candidates={len(candidates)} already_seen_skipped={dedup_skipped} "
+        f"stale_skipped={stale_skipped} new_items={len(new_items)}"
+    )
     return new_items
