@@ -38,6 +38,24 @@ CARD_SIZE = (1080, 1080)
 OUT_DIR = "cards"
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# ── Real bundled font (Poppins, OFL-licensed via Google Fonts) ─────────
+# Pillow's load_default() only ships one thin weight, which is the #1
+# reason generated cards read as "generic/flat" next to a template made
+# in Canva. Poppins ships ExtraBold/Bold/SemiBold/Regular, so headlines,
+# scores and body text can each get the right weight instead of every
+# line looking the same thickness. Ship these four .ttf files in a
+# "fonts/" folder next to graphics.py. If they're missing (e.g. a fresh
+# clone before committing the fonts folder), everything falls back to
+# Pillow's default font automatically — nothing crashes.
+FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+_FONT_FILES = {
+    "extrabold": "Poppins-ExtraBold.ttf",
+    "bold":      "Poppins-Bold.ttf",
+    "semibold":  "Poppins-SemiBold.ttf",
+    "regular":   "Poppins-Regular.ttf",
+}
+_font_cache: dict = {}
+
 BRAND_NAME = "MATCH CORNA LIVE"
 BRAND_TAGLINE = "Follow the page for live scores"
 
@@ -92,11 +110,22 @@ def _hex_to_rgb(h: str) -> tuple:
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    # Pillow's scalable default font only ships one weight; we fake a
-    # bolder look elsewhere via stroke_width rather than a second family,
-    # so every card looks consistent without shipping font files.
-    return ImageFont.load_default(size=size)
+def _font(size: int, weight: str = "semibold") -> ImageFont.FreeTypeFont:
+    """Loads the bundled Poppins weight at `size`, cached per (weight,
+    size) pair. `weight` is one of "extrabold"/"bold"/"semibold"/
+    "regular". Falls back to Pillow's built-in font if the .ttf files
+    haven't been shipped (so this never crashes a deploy)."""
+    key = (weight, size)
+    if key in _font_cache:
+        return _font_cache[key]
+    filename = _FONT_FILES.get(weight, _FONT_FILES["semibold"])
+    path = os.path.join(FONTS_DIR, filename)
+    try:
+        font = ImageFont.truetype(path, size)
+    except Exception:
+        font = ImageFont.load_default(size=size)
+    _font_cache[key] = font
+    return font
 
 
 def _text_w(draw, text, font) -> int:
@@ -254,20 +283,24 @@ def _draw_brand_ribbon(img, draw):
     return draw
 
 
-def _hexagon_points(size, inset: float = 0.0):
-    """Flat-top hexagon vertices inscribed in `size`, matching the
-    hex-badge look used for club crests/flags on broadcast scoreboard
-    templates (points at top/bottom, flat left/right sides). `inset`
-    shrinks the hexagon inward by that many pixels — used to draw a
-    slightly smaller hexagon for a border ring effect."""
+def _hexagon_points(size, inset: float = 0.0, orientation: str = "vertical"):
+    """Hexagon vertices inscribed in `size`. `orientation="vertical"`
+    gives a flat-top hex (points at top/bottom, flat left/right sides)
+    — used for crest/flag badges. `orientation="horizontal"` gives a
+    hex pointed on the left/right, flat top/bottom — the wide shape
+    used for a scoreline container. `inset` shrinks the hexagon inward
+    by that many pixels — used to draw a slightly smaller hexagon for
+    a border ring effect."""
     w, h = size
     cx, cy = w / 2, h / 2
-    r = min(w, h) / 2 - inset
-    return [
-        (cx + r * math.cos(math.radians(90 + 60 * i)),
-         cy + r * math.sin(math.radians(90 + 60 * i)))
-        for i in range(6)
-    ]
+    r_x = w / 2 - inset
+    r_y = h / 2 - inset
+    start = 90 if orientation == "vertical" else 0
+    pts = []
+    for i in range(6):
+        angle = math.radians(start + 60 * i)
+        pts.append((cx + r_x * math.cos(angle), cy + r_y * math.sin(angle)))
+    return pts
 
 
 def _hex_badge_frame(size=(170, 170), border_hex: str = "#8FD3E8", fill_hex: str = WHITE):
@@ -558,6 +591,183 @@ def render_score_card_premium(kind: str, home_name: str, away_name: str,
     return _save(img)
 
 
+
+
+# ══════════════════════════════════════════════════════════════════
+# SCOREBOARD CARD — flat navy/cyan "match-result" template style
+# (kickoff / goal / full-time). This is the requested redesign:
+# solid navy background, one loud accent color reserved for the
+# score container, real bold type instead of Pillow's default font.
+# ══════════════════════════════════════════════════════════════════
+
+SCOREBOARD_NAVY_TOP    = "#152B6B"
+SCOREBOARD_NAVY_BOTTOM = "#0C1B4A"
+SCOREBOARD_INK         = "#0B1E4D"   # score text color (dark navy on bright accent)
+
+# One bright accent per card kind — this is the ONLY loud color on the
+# card (everything else is navy/white), which is exactly what makes
+# the reference template's score hexagon pop instead of blending in.
+SCOREBOARD_ACCENTS = {
+    "default":   "#3FD3E8",
+    "kickoff":   "#3FD3E8",   # bright cyan
+    "goal":      "#FFC93C",   # bright gold
+    "fulltime":  "#3FD3E8",
+    "var":       "#FF5C5C",   # bright red
+    "transfer":  "#FF8A3D",   # bright orange
+    "manager":   "#3FD3E8",
+    "worldcup":  "#3FD3E8",
+    "interview": "#C084FC",
+    "stats":     "#818CF8",
+}
+
+SCOREBOARD_HEADERS = {
+    "default":  ("MATCH UPDATE", ""),
+    "kickoff":  ("MATCH UPDATE", "KICK-OFF"),
+    "goal":     ("MATCH UPDATE", "GOAL"),
+    "fulltime": ("MATCH RESULT", "FULL TIME"),
+    "var":      ("MATCH UPDATE", "VAR REVIEW"),
+}
+
+
+def _scoreboard_canvas(accent_hex: str):
+    """Flat navy gradient + a very faint diagonal chevron texture —
+    deliberately calm/flat (no floodlight rays, no vignette) so the
+    score hexagon is the only thing competing for attention, the way
+    a clean template card reads instead of a busy broadcast graphic."""
+    W, H = CARD_SIZE
+    top = _hex_to_rgb(SCOREBOARD_NAVY_TOP)
+    bottom = _hex_to_rgb(SCOREBOARD_NAVY_BOTTOM)
+    img = Image.new("RGB", CARD_SIZE, top)
+    draw = ImageDraw.Draw(img)
+    for y in range(H):
+        t = y / H
+        row = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+        draw.line([(0, y), (W, y)], fill=row)
+
+    # Faint diagonal stripes, very low opacity — a texture cue, not a
+    # pattern that competes with the foreground like the reference.
+    stripe = Image.new("RGBA", CARD_SIZE, (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(stripe)
+    step = 64
+    for x in range(-H, W, step):
+        sdraw.line([(x, H), (x + H, 0)], fill=(255, 255, 255, 12), width=18)
+    img = Image.alpha_composite(img.convert("RGBA"), stripe).convert("RGB")
+    return img, ImageDraw.Draw(img)
+
+
+def _draw_score_hexagon(img, draw, cx: float, cy: float, home_score, away_score,
+                         accent_hex: str, w: int = 640, h: int = 300):
+    """The wide, pointed-left/right hexagon that holds the scoreline —
+    the single loud-color focal point of the card."""
+    box = (int(w), int(h))
+    hexlayer = Image.new("RGBA", box, (0, 0, 0, 0))
+    hdraw = ImageDraw.Draw(hexlayer)
+    hdraw.polygon(_hexagon_points(box, orientation="horizontal"), fill=_hex_to_rgb(accent_hex))
+    img.paste(hexlayer, (int(cx - w / 2), int(cy - h / 2)), hexlayer)
+    draw = ImageDraw.Draw(img)
+
+    score_text = f"{home_score} - {away_score}"
+    score_font = _font(120, "extrabold")
+    tw = _text_w(draw, score_text, score_font)
+    ascent, descent = score_font.getmetrics()
+    draw.text((cx - tw / 2, cy - (ascent + descent) / 2 - 6), score_text,
+              font=score_font, fill=SCOREBOARD_INK)
+    return draw
+
+
+def render_scoreboard_card(kind: str, home_name: str, away_name: str,
+                            home_score, away_score, competition: str = "",
+                            event_line: str = "", status_label: str = "",
+                            home_crest_url: str = "", away_crest_url: str = "",
+                            show_pulse: bool = False) -> str:
+    """
+    Match-result template card for kickoff / goal / full-time — solid
+    navy background, one bright accent color reserved for the score
+    hexagon, real Poppins weights instead of Pillow's thin default
+    font. Layout mirrors a clean scoreboard template: two-tier header,
+    team crest + score hexagon + team crest in a row, team names under
+    the crests, optional event line (goal scorer/minute) below, brand
+    footer at the bottom.
+    """
+    accent = SCOREBOARD_ACCENTS.get(kind, SCOREBOARD_ACCENTS["default"])
+    img, draw = _scoreboard_canvas(accent)
+    W, H = CARD_SIZE
+
+    top_line, bottom_line = SCOREBOARD_HEADERS.get(kind, SCOREBOARD_HEADERS["default"])
+    if status_label:
+        bottom_line = status_label
+
+    header_font = _font(50, "extrabold")
+    header_text = top_line
+    hw = _text_w(draw, header_text, header_font)
+    draw.text((W / 2 - hw / 2, 64), header_text, font=header_font, fill="#FFFFFF")
+
+    if bottom_line:
+        sub_font = _font(30, "semibold")
+        sub_text = bottom_line
+        sw = sum(_text_w(draw, c, sub_font) + 5 for c in sub_text)
+        _spaced_text(draw, (W / 2 - sw / 2, 134), sub_text, sub_font, accent, tracking=5)
+
+    if competition:
+        comp_font = _font(24, "regular")
+        comp_text = competition.upper()
+        cw = _text_w(draw, comp_text, comp_font)
+        draw.text((W / 2 - cw / 2, 182), comp_text, font=comp_font, fill="#93A3D1")
+
+    # Row: crest — hexagon score — crest. The hexagon is widest exactly
+    # at its vertical center, which is also where the crests sit, so
+    # there must be real clearance between crest-edge and hex-edge or
+    # they visually collide — sized/positioned with a 40px gap on each
+    # side to guarantee that.
+    crest_size = (140, 140)
+    row_cy = 420
+    hex_w, hex_h = 560, 270
+    crest_x_left = 90
+    crest_x_right = W - 90 - crest_size[0]
+    home_crest = _crest_or_avatar(home_crest_url, home_name, crest_size)
+    away_crest = _crest_or_avatar(away_crest_url, away_name, crest_size)
+    img.paste(home_crest, (crest_x_left, int(row_cy - crest_size[1] / 2)), home_crest)
+    img.paste(away_crest, (crest_x_right, int(row_cy - crest_size[1] / 2)), away_crest)
+    draw = ImageDraw.Draw(img)
+
+    draw = _draw_score_hexagon(img, draw, W / 2, row_cy, home_score, away_score,
+                                accent, w=hex_w, h=hex_h)
+
+    # Team names under each crest
+    name_font = _font(32, "semibold")
+    for name, cx in ((home_name, crest_x_left + crest_size[0] / 2), (away_name, crest_x_right + crest_size[0] / 2)):
+        ty = row_cy + crest_size[1] / 2 + 24
+        lines = textwrap.wrap(name.upper(), width=13)[:2]
+        for i, line in enumerate(lines):
+            lw = _text_w(draw, line, name_font)
+            draw.text((cx - lw / 2, ty + i * 38), line, font=name_font, fill="#FFFFFF")
+
+    # Optional event line (e.g. "⚽ Player Name  73'") under the row
+    if event_line:
+        ev_font = _font(34, "semibold")
+        y = row_cy + hex_h / 2 + 90
+        for raw_line in event_line.split("\n"):
+            for line in textwrap.wrap(raw_line, width=32) or [""]:
+                lw = _text_w(draw, line, ev_font)
+                draw.text((W / 2 - lw / 2, y), line, font=ev_font, fill="#FFFFFF")
+                y += 44
+
+    _draw_brand_ribbon_v2(img, draw, accent)
+    return _save(img)
+
+
+def _draw_brand_ribbon_v2(img, draw, accent_hex: str):
+    """Footer bar matching the scoreboard template's flat bottom band —
+    solid dark navy strip, brand name in the accent color, tagline in
+    light gray, both in real Poppins weights."""
+    W, H = img.size
+    ribbon_h = 76
+    band = Image.new("RGBA", (W, ribbon_h), (*_hex_to_rgb(SCOREBOARD_NAVY_BOTTOM), 235))
+    img.paste(Image.alpha_composite(img.crop((0, H - ribbon_h, W, H)).convert("RGBA"), band), (0, H - ribbon_h))
+    draw = ImageDraw.Draw(img)
+    draw.text((44, H - ribbon_h + 14), BRAND_NAME, font=_font(28, "extrabold"), fill=accent_hex)
+    draw.text((44, H - ribbon_h + 46), BRAND_TAGLINE, font=_font(20, "regular"), fill="#C7D0E8")
+    return draw
 
 
 # Two thresholds instead of one hard cutoff:
