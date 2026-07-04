@@ -9,12 +9,13 @@ Covers everything happening right now, never the past:
   - Post-match reactions (interviews, press conferences, reactions to
     a result that just happened)
 
-Three free sources, combined and deduped, posted the moment something
+Four free sources, combined and deduped, posted the moment something
 new is found — not tied to any filler clock:
 
   1. ESPN  /news endpoint (per league + World Cup slug) — site.api.espn.com
   2. BBC Sport Football RSS                             — feeds.bbci.co.uk
   3. Sky Sports RSS (mixed feed, URL-filtered to /football/)
+  4. The Guardian Football RSS                          — theguardian.com
 
 All native/free, no scraping libraries, no paid API. RSS is parsed with
 the standard library (xml.etree) so no new dependency is needed.
@@ -39,6 +40,7 @@ import config
 ESPN_NEWS_API = "https://site.api.espn.com/apis/site/v2/sports/soccer"
 BBC_FOOTBALL_RSS = "https://feeds.bbci.co.uk/sport/football/rss.xml"
 SKY_SPORTS_RSS = "https://www.skysports.com/rss/12040"  # mixed feed — filtered to /football/ below
+GUARDIAN_FOOTBALL_RSS = "https://www.theguardian.com/football/rss"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -244,10 +246,38 @@ def _rss_image(item) -> str:
     return ""
 
 
-def _get_rss(url: str, timeout: int = 10) -> list[dict]:
+def _guardian_image(item) -> str:
+    """The Guardian's RSS carries several <media:content medium="image">
+    entries per item, each a different width variant (commonly ranging
+    from ~140px thumbnails up to 1900px). Picking the first one (like
+    _rss_image does for BBC/Sky, which only ever carry one candidate)
+    would grab whichever tiny thumbnail happens to be listed first —
+    so here we scan all of them and keep the widest, matching the
+    "largest available" approach _espn_article_image() already uses
+    for ESPN's own multi-size image lists. Falls back to _rss_image()
+    (thumbnail/enclosure) if no sized media:content is present."""
+    best_url, best_width = "", 0
+    for content in item.findall(f"{_MEDIA_NS}content"):
+        if (content.get("medium") or "").lower() != "image":
+            continue
+        url = content.get("url")
+        if not url:
+            continue
+        try:
+            width = int(content.get("width") or 0)
+        except ValueError:
+            width = 0
+        if width >= best_width:
+            best_width, best_url = width, url
+    return best_url or _rss_image(item)
+
+
+def _get_rss(url: str, timeout: int = 10, image_fn=_rss_image) -> list[dict]:
     """Minimal RSS 2.0 parser via stdlib — returns
     [{title, link, image}, ...]. `image` is "" when the feed doesn't
-    carry one for that item."""
+    carry one for that item. `image_fn` lets a specific feed (e.g.
+    Guardian) supply its own image-selection logic; defaults to the
+    generic thumbnail/content/enclosure lookup used by BBC/Sky."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code != 200:
@@ -260,7 +290,7 @@ def _get_rss(url: str, timeout: int = 10) -> list[dict]:
             link = (item.findtext("link") or "").strip()
             if title:
                 items.append({
-                    "title": title, "link": link, "image": _rss_image(item),
+                    "title": title, "link": link, "image": image_fn(item),
                     "published": _parse_rss_date(item.findtext("pubDate")),
                 })
         return items
@@ -377,6 +407,32 @@ def _sky_candidates() -> list[dict]:
     return items
 
 
+def _guardian_candidates() -> list[dict]:
+    items = []
+    # Guardian's feed carries several sized <media:content> variants per
+    # item (unlike BBC/Sky's single thumbnail) — _guardian_image picks
+    # the widest one so photo cards get the sharpest source image
+    # available, same "largest wins" rule ESPN's own image list uses.
+    raw = _get_rss(GUARDIAN_FOOTBALL_RSS, image_fn=_guardian_image)
+    for entry in raw:
+        category, label = _classify_headline(entry["title"])
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:guardian:{entry['link'] or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     entry["link"],
+            "image":    entry.get("image", ""),
+            "published": entry.get("published"),
+            "source":   "The Guardian",
+        })
+    print(f"[NEWS] Guardian: {len(raw)} RSS entries fetched, {len(items)} matched a category")
+    return items
+
+
 def check_new(already_seen: set) -> list[dict]:
     """
     Polls all three sources, returns news items (transfers, manager
@@ -388,7 +444,7 @@ def check_new(already_seen: set) -> list[dict]:
     """
     candidates = []
     per_source_counts = {}
-    for fn in (_espn_candidates, _bbc_candidates, _sky_candidates):
+    for fn in (_espn_candidates, _bbc_candidates, _sky_candidates, _guardian_candidates):
         try:
             result = fn()
             per_source_counts[fn.__name__] = len(result)
