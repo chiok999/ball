@@ -23,6 +23,7 @@ import transfers
 import worldcup
 import elo
 import graphics
+import article
 
 # ══════════════════════════════════════════════════════════════════
 # RAILWAY KEEP-ALIVE SERVER
@@ -336,6 +337,7 @@ _NEWS_CARD_KIND = {
     "manager":   "manager",
     "worldcup":  "worldcup",
     "interview": "interview",
+    "tracker":   "stats",
 }
 
 
@@ -367,7 +369,20 @@ def maybe_post_transfer_news(tick: int):
             )
         if not img:
             img = _safe_image(graphics.render_card, card_kind, "", label.upper(), [item["headline"]])
-        if _post_if_new(item["key"], poster.fmt_football_news(item), image_path=img):
+        # Fetch the linked article and pull out a few concrete facts
+        # (fee, contract length, one short quote) so the caption is a
+        # brief story instead of just the headline again — see
+        # article.py for why this extracts facts rather than
+        # rewriting the article's prose. Only done here (post time,
+        # after the rate-limit check above), not during
+        # transfers.check_new(), so items held back by the cap this
+        # cycle never cost a wasted fetch.
+        try:
+            facts = article.fetch_and_extract_facts(item.get("link", ""))
+        except Exception as e:
+            print(f"[NEWS] ⚠️  Article fetch/extract failed, posting without extra facts: {e}")
+            facts = {}
+        if _post_if_new(item["key"], poster.fmt_football_news(item, article_facts=facts), image_path=img):
             _transfer_post_timestamps.append(time.time())
         time.sleep(2)
 
