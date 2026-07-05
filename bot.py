@@ -234,6 +234,7 @@ def _key_goal(mid: str, g: dict, idx: int = 0) -> str:
 def _key_extratime(mid: str)            -> str: return f"extratime:{mid}"
 def _key_fulltime(mid: str)             -> str: return f"ft:{mid}"
 def _key_elo_update(mid: str)           -> str: return f"elo_updated:{mid}"
+def _key_winprob(mid: str)              -> str: return f"winprob:{mid}"
 def _key_var(mid: str, v: dict)         -> str: return f"var:{mid}:{v.get('minute','?')}:{v.get('player','?')}"
 
 
@@ -283,25 +284,39 @@ def maybe_post_filler(matches: list):
         upcoming.sort(key=lambda m: m.get("utcDate", ""))
         if upcoming:
             m = upcoming[0]
-            probs = elo.win_probability(
-                m["homeTeam"]["name"], m["awayTeam"]["name"],
-                home_advantage=config.ELO_HOME_ADVANTAGE,
-            )
-            if probs:
-                print(f"[FILLER] 🔮 Posting win probability: {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
-                lines = [
-                    f"{m['homeTeam']['name']} - {probs['home']}%",
-                    f"Draw - {probs['draw']}%",
-                    f"{m['awayTeam']['name']} - {probs['away']}%",
-                ]
-                img = _safe_image(
-                    graphics.render_card, "stats", "🚩",
-                    f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}", lines,
-                )
-                if _post_now(poster.fmt_win_probability(m, probs), image_path=img):
-                    return
+            # Every match needs a stable id for the dedup key below —
+            # sofascore.py/scraper.py normalize matches with an "id"
+            # field, but fall back to a name+kickoff-time composite so
+            # this never crashes if a source is ever missing it.
+            mid = m.get("id") or f"{m['homeTeam']['name']}_{m['awayTeam']['name']}_{m.get('utcDate', '')}"
+            if _already_posted(_key_winprob(mid)):
+                # Already posted the probability for this exact fixture —
+                # this was the bug: the old code used _post_now() with no
+                # dedup key at all, so the SAME upcoming match (still the
+                # earliest scheduled one until it kicks off) got reposted
+                # every single filler cycle. Skip it and fall through so
+                # a quiet cycle doesn't post nothing at all.
+                print(f"[FILLER] ⏭️  Win probability already posted for {m['homeTeam']['name']} vs {m['awayTeam']['name']} — skipping repeat")
             else:
-                print("[FILLER] ⚠️  Win probability unavailable this cycle (ClubElo unreachable or team ratings unresolved)")
+                probs = elo.win_probability(
+                    m["homeTeam"]["name"], m["awayTeam"]["name"],
+                    home_advantage=config.ELO_HOME_ADVANTAGE,
+                )
+                if probs:
+                    print(f"[FILLER] 🔮 Posting win probability: {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
+                    lines = [
+                        f"{m['homeTeam']['name']} - {probs['home']}%",
+                        f"Draw - {probs['draw']}%",
+                        f"{m['awayTeam']['name']} - {probs['away']}%",
+                    ]
+                    img = _safe_image(
+                        graphics.render_card, "stats", "🚩",
+                        f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}", lines,
+                    )
+                    if _post_if_new(_key_winprob(mid), poster.fmt_win_probability(m, probs), image_path=img):
+                        return
+                else:
+                    print("[FILLER] ⚠️  Win probability unavailable this cycle (ClubElo unreachable or team ratings unresolved)")
         else:
             print("[FILLER] ⚠️  No upcoming World Cup fixture to show win probability for")
 
@@ -479,6 +494,7 @@ def process_match(match: dict):
             graphics.render_scoreboard_card, "fulltime", hname, aname, h_sc or 0, a_sc or 0,
             competition=match.get("_comp_name", ""),
             status_label=status_label, show_pulse=False,
+            event_line=poster.scorers_line(match),
             home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
         )
         _post_if_new(_key_fulltime(mid), poster.fmt_fulltime(match), image_path=img)
