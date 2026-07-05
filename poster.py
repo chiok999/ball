@@ -585,23 +585,81 @@ _NEWS_CATEGORY_STYLE = {
     "manager":   ("MANAGER NEWS",         "📋", "ManagerNews"),
     "worldcup":  ("WORLD CUP NEWS",       "🌍", "WorldCup2026"),
     "interview": ("POST-MATCH REACTION",  "🎙️", "PostMatch"),
+    "tracker":   ("PLAYER TRACKER",       "📊", "PlayerTracker"),
 }
 
 
-def fmt_football_news(item: dict) -> str:
+# One-sentence framing per category, added under the headline so the
+# caption reads as a short story instead of just repeating the
+# headline. Deliberately generic/non-fabricated — these are honest
+# framing lines built from data we actually have (category, league),
+# NOT invented facts about the story. A real "what happened and why
+# it matters" summary would need the full article text, which this
+# bot doesn't fetch (RSS only gives headlines) and copyright rules
+# mean we can't reproduce/closely paraphrase substantial article text
+# anyway — so this stays a framing sentence, not a rewritten article.
+_STORY_CONTEXT = {
+    "transfer":  "This is a developing transfer story in the {league} — expect more twists as talks continue.",
+    "manager":   "A big call in the {league} dugout. We'll bring you the next update as soon as more is confirmed.",
+    "worldcup":  "A big World Cup moment — follow along for how this shapes the tournament picture.",
+    "interview": "Straight from the player — reactions like this often shape the next few days of team news.",
+    "tracker":   "A quick look at how things stand right now — check back for the next update.",
+}
+
+
+def _facts_to_bullets(facts: dict) -> list:
+    """Turns extracted article facts into short plain-English bullet
+    lines. Deliberately terse — one fact per line reads easier for a
+    reader skimming a phone feed than a rewritten paragraph would,
+    which is also exactly why this is safer copyright-wise (see
+    article.py's module docstring for the full reasoning). Priority
+    order: a direct quote is the most compelling single line, so it's
+    listed first and survives the cap even if a fee/duration also
+    matched."""
+    candidates = []
+    if "quote" in facts:
+        candidates.append(f'🗣️ "{facts["quote"]}"')
+    if "fee" in facts:
+        candidates.append(f"💰 Reported fee: {facts['fee']}")
+    if "duration" in facts:
+        candidates.append(f"📝 Contract length: {facts['duration']}")
+    if "until" in facts and "duration" not in facts:
+        candidates.append(f"📅 Deal reportedly runs {facts['until']}")
+    return candidates[:2]  # cap so the caption stays under ~10 lines total
+
+
+def fmt_football_news(item: dict, article_facts: dict | None = None) -> str:
     """
     Present/future football news only — transfers, manager sackings
     and appointments, World Cup retirements/knockouts/upcoming
     fixtures, and post-match reactions. Header, marker, and primary
     hashtag adapt to item["category"] so each flavor reads distinctly
     on the page instead of everything looking like a transfer post.
+
+    `article_facts` (from article.fetch_and_extract_facts) adds a few
+    concrete bullet lines under the headline — fee, contract length,
+    one short quote — so the caption reads as a brief story instead
+    of just the headline again. Falls back to a generic one-line
+    framing sentence when no facts were found (fetch failed, no
+    matching facts in the article, or no link at all) — this must
+    never leave the caption looking broken just because a fetch
+    didn't work. The card IMAGE still shows the original headline
+    exactly as written (see graphics.render_photo_card call site in
+    bot.py) — only this caption text is reworded/expanded.
     """
     category = item.get("category", "transfer")
     header, marker, primary_tag = _NEWS_CATEGORY_STYLE.get(
         category, _NEWS_CATEGORY_STYLE["transfer"]
     )
     headline = simplify_headline(_strip_urls(item["headline"]))
-    body = [headline]
+    bullets = _facts_to_bullets(article_facts or {})
+    if bullets:
+        body = [headline, ""] + bullets
+    else:
+        context = _STORY_CONTEXT.get(category, _STORY_CONTEXT["transfer"]).format(
+            league=item.get("league") or "football"
+        )
+        body = [headline, "", context]
     league_tag = item["league"].replace(" ", "")
     return _build_post(
         header, body,
