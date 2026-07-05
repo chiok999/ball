@@ -516,6 +516,62 @@ def fmt_win_probability(match: dict, probs: dict) -> str:
     return _build_post(f"{home} - {away} Winner Probability:", body, tags, source="ClubElo (Elo ratings)")
 
 
+# ══════════════════════════════════════════════════════════════════
+# HEADLINE SIMPLIFICATION — best-effort plain-English pass
+# ══════════════════════════════════════════════════════════════════
+# Source headlines (ESPN/BBC/Guardian/90min) are written for native
+# English-speaking readers and often pack a lot into one dense
+# sentence. This is a rule-based pass, NOT full rewriting — genuinely
+# simplifying a complex sentence needs an LLM step, which this project
+# intentionally doesn't use (README: "100% free — no paid APIs"). If
+# headlines still read hard after this, a small paid rewrite call is
+# the real next step to consider, not piling on more regex here.
+
+# Safe, unambiguous whole-phrase swaps only — nothing that risks
+# mangling grammar. Checked case-insensitively.
+_HEADLINE_SIMPLIFICATIONS = [
+    (r"\bwould prefer to join\b",                 "wants to join"),
+    (r"\bclose to agreeing a deal to sign\b",      "close to signing"),
+    (r"\bunprofessional\b",                        "rude"),
+    (r"\brelieved of (?:his|her|their) duties\b",  "sacked"),
+    (r"\ban? enquiry\b",                           "an approach"),
+    (r"\bconfirmed as\b",                          "named as"),
+    (r"\bpersonal terms\b",                        "personal contract details"),
+    (r"\bhighly[- ]rated\b",                       "highly rated"),
+]
+
+
+def _strip_trailing_attribution(text: str) -> str:
+    """Drops wire-style trailing attribution clutter like
+    ' - Agent Basia Michaels' that adds no meaning for someone
+    scanning a Facebook caption."""
+    return re.sub(r"\s-\s(?:Agent|Source|Via)\s+[^-]+$", "", text, flags=re.I).strip()
+
+
+def _soft_wrap(text: str, max_len: int = 90) -> str:
+    """A long, dense headline gets broken onto a second line at the
+    comma/semicolon nearest the midpoint — same words, easier to scan
+    on a phone feed. Never splits mid-word, never makes more than 2
+    lines, and leaves short headlines untouched."""
+    if len(text) <= max_len:
+        return text
+    mid = len(text) // 2
+    candidates = [m.start() for m in re.finditer(r",\s|;\s", text)]
+    if not candidates:
+        return text
+    split_at = min(candidates, key=lambda i: abs(i - mid))
+    return text[:split_at + 1].rstrip(",; ") + "\n" + text[split_at + 1:].strip()
+
+
+def simplify_headline(text: str) -> str:
+    """Strip wire clutter, swap a short list of harder words/phrases
+    for simpler equivalents, then soft-wrap if still a long run-on."""
+    result = _strip_trailing_attribution(text)
+    for pattern, replacement in _HEADLINE_SIMPLIFICATIONS:
+        result = re.sub(pattern, replacement, result, flags=re.I)
+    return _soft_wrap(result)
+
+
 def _strip_urls(text: str) -> str:
     """Defensive — headlines shouldn't contain URLs, but strip any if present."""
     return re.sub(r'https?://\S+', '', text).strip()
@@ -544,7 +600,7 @@ def fmt_football_news(item: dict) -> str:
     header, marker, primary_tag = _NEWS_CATEGORY_STYLE.get(
         category, _NEWS_CATEGORY_STYLE["transfer"]
     )
-    headline = _strip_urls(item["headline"])
+    headline = simplify_headline(_strip_urls(item["headline"]))
     body = [headline]
     league_tag = item["league"].replace(" ", "")
     return _build_post(
@@ -598,6 +654,21 @@ def fmt_upcoming_fixtures(fixtures: list) -> str:
 
     lines.append("\n#MatchCornaLive")
     return "\n".join(lines)
+
+
+def scorers_line(match: dict) -> str:
+    """Compact 'Player 27'   Player 61'' string of every goal in the
+    match, sorted by minute — for embedding directly on the full-time
+    scoreboard card image (graphics.render_scoreboard_card's
+    event_line param), separate from the fuller per-team breakdown
+    fmt_fulltime() uses in the post caption itself."""
+    def _sort_key(g: dict):
+        try:
+            return int(_minute(g["minute"]))
+        except (TypeError, ValueError):
+            return 0
+    goals = sorted(match.get("goals", []), key=_sort_key)
+    return "   ".join(f"{g['scorer']['name']} {_minute(g['minute'])}'" for g in goals)
 
 
 def fmt_fulltime(match: dict) -> str:
