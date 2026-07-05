@@ -160,7 +160,7 @@ _MANAGER_PATTERNS = [
     r"\bsack(?:ed|s|ing)?\b", r"\bfired\b",
     r"\bstep(?:s|ped)?\s+down\b", r"\bresign(?:s|ed|ation)?\b",
     r"\bpart(?:s|ed)?\s+ways\b", r"\brelieved\s+of\b",
-    r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?)\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
+    r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?|hir(?:e|es|ed|ing))\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
     r"\bnew\s+(?:manager|head\s+coach|boss)\b",
     r"\btakes?\s+over\s+as\s+(?:manager|coach|boss)\b",
     r"\binterim\s+(?:manager|boss|coach)\b",
@@ -186,7 +186,13 @@ _INTERVIEW_PATTERNS = [
     r"\bpress\s+conference\b", r"\bhail(?:s|ed)\b", r"\bblast(?:s|ed)\b",
     r"\bprais(?:es|ed)\b", r"\bon\s+the\s+(?:win|defeat|loss|draw)\b",
     r"\bexclusive\s+interview\b", r"\bfull\s+interview\b",
-    r"\bresponds?\s+to\s+criticism\b",
+    r"\bresponds?\s+to\s+criticism\b", r"\bunprofessional\b",
+    # Pundit-quote headline format ESPN/BBC use a lot: "Nicol: Fernández
+    # and Pastore have been unprofessional to Chelsea", "Marcotti: Why
+    # City should be worried". Checked LAST (see _CATEGORIES order)
+    # so a headline like "Report: Arsenal complete signing of X" gets
+    # caught by the transfer patterns first and never reaches this.
+    r"^[A-Z][\w'\u00c0-\u017f-]{1,20}:\s",
 ]
 
 _TRANSFER_PATTERNS = [
@@ -205,14 +211,30 @@ _TRANSFER_PATTERNS = [
     r"\bconfirm(?:s|ed)?\s+(?:the\s+)?(?:signing|transfer|deal|move)\b",
     r"\bwant(?:s|ed)?\s+to\s+(?:sign|join)\b",
     r"\bprefer(?:s|red)?\s+to\s+join\b", r"\bset\s+to\s+join\b",
+    # Transfer speculation — "wants X in the PL", "backs move to work",
+    # "keen on", "monitoring", "eyeing" — the verb and the transfer noun
+    # (sign/join/deal/move/transfer) are often 5-15 words apart rather
+    # than adjacent, so this allows a wide gap between them instead of
+    # requiring the exact "want to sign" phrasing above.
+    r"\b(?:want(?:s|ed)?|keen|monitor(?:ing)?|admir(?:er|ing)?|ey(?:e|es|eing|ed)|track(?:ing)?|scout(?:ing)?)\b[^.]{0,100}\b(?:sign|join|deal|move|transfer)\b",
+    r"\binterest(?:ed)?\b",       # "Barcelona interest", "interested in" — almost always transfer speculation in a football feed
+    r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
+    # Plain retirement (not tied to a specific international tournament —
+    # that's covered separately by the World Cup patterns above it in
+    # the check order).
+    r"\bannounces?\s+(?:his\s+|her\s+)?retirement\b", r"\bretires\b",
 ]
 
 # category -> (compiled patterns, graphics kind, display label)
+# Order matters: transfer/manager/worldcup are checked BEFORE interview
+# because interview's generic "Name: opinion" pattern would otherwise
+# swallow headlines like "Report: Arsenal complete signing of X" before
+# the transfer patterns ever get a chance to look at them.
 _CATEGORIES = (
     ("manager",   [re.compile(p, re.I) for p in _MANAGER_PATTERNS],   "Manager News"),
     ("worldcup",  [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],  "World Cup News"),
-    ("interview", [re.compile(p, re.I) for p in _INTERVIEW_PATTERNS], "Post-Match Reaction"),
     ("transfer",  [re.compile(p, re.I) for p in _TRANSFER_PATTERNS],  "Transfer News"),
+    ("interview", [re.compile(p, re.I) for p in _INTERVIEW_PATTERNS], "Post-Match Reaction"),
 )
 
 # Rolling sample of headlines that matched NO category this poll, so a
