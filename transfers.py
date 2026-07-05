@@ -183,16 +183,27 @@ _WORLDCUP_PATTERNS = [
 
 _INTERVIEW_PATTERNS = [
     r"\breact(?:s|ed|ion)?\s+to\b", r"\bspeaks?\s+(?:after|to\s+media)\b",
-    r"\bpress\s+conference\b", r"\bhail(?:s|ed)\b", r"\bblast(?:s|ed)\b",
-    r"\bprais(?:es|ed)\b", r"\bon\s+the\s+(?:win|defeat|loss|draw)\b",
+    r"\bpress\s+conference\b", r"\bon\s+the\s+(?:win|defeat|loss|draw)\b",
     r"\bexclusive\s+interview\b", r"\bfull\s+interview\b",
-    r"\bresponds?\s+to\s+criticism\b", r"\bunprofessional\b",
-    # Pundit-quote headline format ESPN/BBC use a lot: "Nicol: Fernández
-    # and Pastore have been unprofessional to Chelsea", "Marcotti: Why
-    # City should be worried". Checked LAST (see _CATEGORIES order)
-    # so a headline like "Report: Arsenal complete signing of X" gets
-    # caught by the transfer patterns first and never reaches this.
-    r"^[A-Z][\w'\u00c0-\u017f-]{1,20}:\s",
+    r"\bresponds?\s+to\s+criticism\b",
+    # Direct player/manager quote headline: "Son Heung-min 'indescribably
+    # hurt' by South Korea World Cup exit" — a name (1-4 capitalized
+    # words) immediately followed by a quoted phrase is the actual
+    # person speaking, not a reporter's opinion. Explicitly excludes
+    # section labels ESPN/BBC use that also start with a capital word
+    # followed by a colon — "Listen:", "Papers:", "Watch:", "Report:" —
+    # which are radio-show listings / newspaper round-ups written BY
+    # reporters, not the player's own reaction. That was the bug: the
+    # previous version matched any "Word:" prefix, so those got miscast
+    # as player reactions while the real Son Heung-min quote (no colon,
+    # no "reacts to") was missed entirely.
+    r"^(?!(?:listen|watch|papers|paper|report|reports|reported|confirmed|exclusive|"
+    r"live|update|breaking|video|opinion|ranking|rankings|quiz|gallery|podcast)\b)"
+    r"[A-Z][\w\u00c0-\u017f'-]+(?:\s+[A-Z][\w\u00c0-\u017f'-]+){0,3}:?\s*['\u2018\u201c]",
+]
+
+_TRACKER_PATTERNS = [
+    r"\btracker\b",   # "Messi tracker: Goals, assists, key moments in 2026"
 ]
 
 _TRANSFER_PATTERNS = [
@@ -233,6 +244,7 @@ _TRANSFER_PATTERNS = [
 _CATEGORIES = (
     ("manager",   [re.compile(p, re.I) for p in _MANAGER_PATTERNS],   "Manager News"),
     ("worldcup",  [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],  "World Cup News"),
+    ("tracker",   [re.compile(p, re.I) for p in _TRACKER_PATTERNS],   "Player Tracker"),
     ("transfer",  [re.compile(p, re.I) for p in _TRANSFER_PATTERNS],  "Transfer News"),
     ("interview", [re.compile(p, re.I) for p in _INTERVIEW_PATTERNS], "Post-Match Reaction"),
 )
