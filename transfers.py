@@ -1,815 +1,589 @@
 """
-poster.py — Facebook posting + message formatters
-===================================================
-Post formats:
+transfers.py — Breaking football news, immediate (present/future only)
+=========================================================================
+Six tracked categories, each checked in this order (first match wins):
+  1. Manager sacking   — sackings, resignations, "parts ways"
+  2. Manager transfer  — new appointments, unveilings, interim bosses
+  3. World Cup news    — retirements, knockouts/eliminations, upcoming
+                          fixtures, qualification results
+  4. Deal done         — signings/moves that are CONFIRMED/official
+  5. Player transfer   — signings/loans/bids/contract talk in progress
+  6. Gossip            — speculation: linked with, interest, rumours
 
-  Lineup (FD only):
-    📋 LINEUPS | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League
-    🏟️ Arsenal vs Chelsea
-    Arsenal (4-3-3): Raya, White, Saliba...
-    Chelsea (4-2-3-1): Sanchez, James...
-    #Arsenal #Chelsea #PL #MatchCornaLive
+Five free sources, combined and deduped, posted the moment something
+new is found — not tied to any filler clock:
 
-  Kickoff:
-    🟢 KICKOFF | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League
-    🏟️ Arsenal 0 - 0 Chelsea
-    #Arsenal #Chelsea #PL #MatchCornaLive
+  1. ESPN  /news endpoint (per league + World Cup slug) — site.api.espn.com
+  2. BBC Sport Football RSS                             — feeds.bbci.co.uk
+  3. Sky Sports RSS (mixed feed, URL-filtered to /football/)
+  4. The Guardian Football RSS                          — theguardian.com
+  5. 90min RSS                                          — 90min.com
 
-  Goal:
-    ⚽ GOAL | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League
-    🏟️ Arsenal 2 - 1 Chelsea
-    Saka ⚽ 67'
-    🎯 Odegaard (assist, when available)
-    #Arsenal #Chelsea #PL #MatchCornaLive
+All native/free, no scraping libraries, no paid API. RSS is parsed with
+the standard library (xml.etree) so no new dependency is needed.
 
-  Extra Time:
-    ⏱️ EXTRA TIME | 🏆 Champions League
-    🏟️ Arsenal 1 - 1 Real Madrid
-    #Arsenal #RealMadrid #UCL #MatchCornaLive
+FRESHNESS IS ENFORCED, NOT ASSUMED: every candidate is run through
+_is_fresh() (config.TRANSFER_MAX_AGE_HOURS) before it's ever returned.
+This is what keeps the page "present going forward" — nothing here
+ever surfaces old news, regardless of dedup state.
 
-  Full Time:
-    🏁 FULL TIME | 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League
-    🏟️ Arsenal 3 - 1 Chelsea
-    Arsenal
-    ⚽ Saka 12'  ⚽ Havertz 45'  ⚽ Trossard 89'
-    Chelsea
-    ⚽ Sterling 34'
-    #Arsenal #Chelsea #PL #MatchCornaLive
+Every candidate also carries a "description" field (the RSS
+<description>/ESPN shortDescription — a short teaser sentence or two,
+distinct from the headline) so poster.fmt_football_news() can build a
+caption that reads as more than just the headline repeated. This
+module does NOT invent facts, scores, fees, or "reliability tiers" — a
+headline (and its feed-supplied teaser) is taken and lightly
+categorized, never embellished.
 """
 
-import time
 import re
+import email.utils
+from datetime import datetime, timezone
 import requests
+import xml.etree.ElementTree as ET
 import config
 
-_FB_API = "v22.0"   # bump here when Meta deprecates the current version
+ESPN_NEWS_API = "https://site.api.espn.com/apis/site/v2/sports/soccer"
+BBC_FOOTBALL_RSS = "https://feeds.bbci.co.uk/sport/football/rss.xml"
+SKY_SPORTS_RSS = "https://www.skysports.com/rss/12040"  # mixed feed — filtered to /football/ below
+GUARDIAN_FOOTBALL_RSS = "https://www.theguardian.com/football/rss"
+NINETY_MIN_RSS = "https://www.90min.com/posts.rss"
 
-# ══════════════════════════════════════════════════════════════════
-# COUNTRY → FLAG EMOJI
-# ══════════════════════════════════════════════════════════════════
-
-COUNTRY_FLAG = {
-    # Europe
-    "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
-    "Germany": "🇩🇪", "France": "🇫🇷", "Spain": "🇪🇸", "Italy": "🇮🇹",
-    "Portugal": "🇵🇹", "Netherlands": "🇳🇱", "Belgium": "🇧🇪",
-    "Croatia": "🇭🇷", "Serbia": "🇷🇸", "Poland": "🇵🇱",
-    "Turkey": "🇹🇷", "Ukraine": "🇺🇦", "Switzerland": "🇨🇭",
-    "Austria": "🇦🇹", "Denmark": "🇩🇰", "Sweden": "🇸🇪",
-    "Norway": "🇳🇴", "Finland": "🇫🇮", "Hungary": "🇭🇺",
-    "Czech Republic": "🇨🇿", "Czechia": "🇨🇿", "Slovakia": "🇸🇰",
-    "Romania": "🇷🇴", "Greece": "🇬🇷", "Iceland": "🇮🇸",
-    "Ireland": "🇮🇪", "Republic of Ireland": "🇮🇪",
-    "Northern Ireland": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-    "Albania": "🇦🇱", "Kosovo": "🇽🇰", "Montenegro": "🇲🇪",
-    "Slovenia": "🇸🇮", "Bosnia": "🇧🇦",
-    "Bosnia and Herzegovina": "🇧🇦", "Bosnia & Herzegovina": "🇧🇦",
-    "Bulgaria": "🇧🇬", "North Macedonia": "🇲🇰",
-    "Georgia": "🇬🇪", "Armenia": "🇦🇲", "Azerbaijan": "🇦🇿",
-    "Russia": "🇷🇺", "Belarus": "🇧🇾", "Moldova": "🇲🇩",
-    "Lithuania": "🇱🇹", "Latvia": "🇱🇻", "Estonia": "🇪🇪",
-    "Luxembourg": "🇱🇺", "Malta": "🇲🇹", "Cyprus": "🇨🇾",
-    "Israel": "🇮🇱", "Kazakhstan": "🇰🇿",
-    "Faroe Islands": "🇫🇴", "Gibraltar": "🇬🇮",
-    "San Marino": "🇸🇲", "Andorra": "🇦🇩", "Liechtenstein": "🇱🇮",
-    # Americas
-    "Brazil": "🇧🇷", "Argentina": "🇦🇷", "Uruguay": "🇺🇾",
-    "Colombia": "🇨🇴", "Chile": "🇨🇱", "Peru": "🇵🇪",
-    "Ecuador": "🇪🇨", "Bolivia": "🇧🇴", "Paraguay": "🇵🇾",
-    "Venezuela": "🇻🇪",
-    "USA": "🇺🇸", "United States": "🇺🇸", "Mexico": "🇲🇽",
-    "Canada": "🇨🇦", "Costa Rica": "🇨🇷", "Panama": "🇵🇦",
-    "Honduras": "🇭🇳", "Jamaica": "🇯🇲", "Haiti": "🇭🇹",
-    "Trinidad and Tobago": "🇹🇹", "Trinidad & Tobago": "🇹🇹",
-    "El Salvador": "🇸🇻", "Guatemala": "🇬🇹", "Nicaragua": "🇳🇮",
-    "Cuba": "🇨🇺", "Curacao": "🇨🇼", "Martinique": "🇲🇶",
-    "Aruba": "🇦🇼", "Bermuda": "🇧🇲", "Grenada": "🇬🇩",
-    "Guyana": "🇬🇾", "Belize": "🇧🇿", "Suriname": "🇸🇷",
-    # Africa
-    "Nigeria": "🇳🇬", "Ghana": "🇬🇭", "Senegal": "🇸🇳",
-    "Morocco": "🇲🇦", "Egypt": "🇪🇬", "Cameroon": "🇨🇲",
-    "Ivory Coast": "🇨🇮", "Cote d'Ivoire": "🇨🇮",
-    "South Africa": "🇿🇦", "Tunisia": "🇹🇳", "Algeria": "🇩🇿",
-    "Mali": "🇲🇱", "Zambia": "🇿🇲", "Zimbabwe": "🇿🇼",
-    "Tanzania": "🇹🇿", "Uganda": "🇺🇬", "Kenya": "🇰🇪",
-    "Ethiopia": "🇪🇹", "Congo": "🇨🇬", "DR Congo": "🇨🇩",
-    "Guinea": "🇬🇳", "Guinea-Bissau": "🇬🇼",
-    "Burkina Faso": "🇧🇫", "Benin": "🇧🇯",
-    "Gabon": "🇬🇦", "Angola": "🇦🇴", "Mozambique": "🇲🇿",
-    "Rwanda": "🇷🇼", "Liberia": "🇱🇷", "Sierra Leone": "🇸🇱",
-    "Gambia": "🇬🇲", "Togo": "🇹🇬", "Niger": "🇳🇪",
-    "Namibia": "🇳🇦", "Botswana": "🇧🇼", "Malawi": "🇲🇼",
-    "Mauritania": "🇲🇷", "Cape Verde": "🇨🇻",
-    "Cape Verde Islands": "🇨🇻",
-    "Equatorial Guinea": "🇬🇶", "Sudan": "🇸🇩",
-    "South Sudan": "🇸🇸", "Somalia": "🇸🇴",
-    "Central African Republic": "🇨🇫",
-    "Sao Tome and Principe": "🇸🇹",
-    "Comoros": "🇰🇲", "Seychelles": "🇸🇨",
-    "Eswatini": "🇸🇿", "Lesotho": "🇱🇸",
-    # Asia
-    "Japan": "🇯🇵", "South Korea": "🇰🇷", "Korea Republic": "🇰🇷",
-    "China": "🇨🇳", "Australia": "🇦🇺",
-    "Iran": "🇮🇷", "IR Iran": "🇮🇷",
-    "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦",
-    "UAE": "🇦🇪", "United Arab Emirates": "🇦🇪",
-    "Iraq": "🇮🇶", "Jordan": "🇯🇴",
-    "Oman": "🇴🇲", "Bahrain": "🇧🇭", "Kuwait": "🇰🇼",
-    "India": "🇮🇳", "Thailand": "🇹🇭", "Vietnam": "🇻🇳",
-    "Indonesia": "🇮🇩", "Malaysia": "🇲🇾", "Philippines": "🇵🇭",
-    "Uzbekistan": "🇺🇿", "Tajikistan": "🇹🇯",
-    "North Korea": "🇰🇵", "Korea DPR": "🇰🇵",
-    "Syria": "🇸🇾", "Lebanon": "🇱🇧", "Palestine": "🇵🇸",
-    "Pakistan": "🇵🇰", "Bangladesh": "🇧🇩",
-    "Hong Kong": "🇭🇰", "Singapore": "🇸🇬",
-    "Sri Lanka": "🇱🇰", "Nepal": "🇳🇵",
-    "Myanmar": "🇲🇲", "Cambodia": "🇰🇭",
-    "Kyrgyzstan": "🇰🇬", "Turkmenistan": "🇹🇲",
-    # Oceania
-    "New Zealand": "🇳🇿", "Fiji": "🇫🇯",
-    "Papua New Guinea": "🇵🇬", "Solomon Islands": "🇸🇧",
-}
-
-COMP_HASHTAG = {
-    "Premier League":             "PL",
-    "Bundesliga":                 "Bundesliga",
-    "La Liga":                    "LaLiga",
-    "Serie A":                    "SerieA",
-    "Ligue 1":                    "Ligue1",
-    "Champions League":           "UCL",
-    "Europa League":              "UEL",
-    "Europa Conference League":   "UECL",
-    "FA Cup":                     "FACup",
-    "EFL Cup":                    "EFLCup",
-    "Championship":               "Championship",
-    "Eredivisie":                 "Eredivisie",
-    "MLS":                        "MLS",
-    "Brasileirao":                "Brasileirao",
-    "Liga MX":                    "LigaMX",
-    "Belgian Pro League":         "JPL",
-    "Saudi Pro League":           "SPL",
-    "AFC Champions Elite":        "ACL",
-    "CAF Champions League":       "CAFCL",
-    "International Friendly":     "Friendly",
-    "FIFA World Cup":             "WorldCup",
-    "European Championship":      "EURO",
-    "UEFA Nations League":        "NationsLeague",
-    "Copa America":               "CopaAmerica",
-    "Gold Cup":                   "GoldCup",
-    "AFCON":                      "AFCON",
-    "WC Qualifier Europe":        "WCQ",
-    "WC Qualifier Africa":        "WCQ",
-    "WC Qualifier CONCACAF":      "WCQ",
-    "WC Qualifier South America": "WCQ",
-    "WC Qualifier Asia":          "WCQ",
-    "WC Qualifier Oceania":       "WCQ",
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/xml, */*",
 }
 
 
-def _comp_tag(comp_name: str) -> str:
-    tag = COMP_HASHTAG.get(comp_name, "")
-    if not tag:
-        tag = comp_name.replace(" ", "")
-    return f"#{tag}"
+def _scale_up(w: int, h: int, target_min: int = 960) -> tuple:
+    """Scales (w, h) up, preserving aspect ratio, until the shorter side
+    reaches roughly target_min. Preserving the exact ratio matters for
+    CDNs like BBC's ichef "ice" endpoint, which crops to the requested
+    WxH rather than just resizing — asking for the wrong ratio would
+    warp or badly crop the photo instead of just making it bigger."""
+    scale = max(1, round(target_min / max(1, min(w, h))))
+    return w * scale, h * scale
 
 
-def team_flag(name: str) -> str:
-    if name in COUNTRY_FLAG:
-        return COUNTRY_FLAG[name]
-    for country, flag in COUNTRY_FLAG.items():
-        if country.lower() in name.lower():
-            return flag
+def _upgrade_image_url(url: str) -> str:
+    """Best-effort attempt to get a bigger image than the feed's default
+    thumbnail, by recognizing a few common CDN URL patterns and asking
+    for a larger size variant. Falls back to the original URL untouched
+    if none of these patterns match — this never invents a URL that
+    wasn't derivable from a real pattern, it only asks the same CDN for
+    a different size of the same image."""
+    if not url:
+        return url
+    try:
+        seg = re.search(r"/(\d{2,4})x(\d{2,4})/", url)
+        if seg:
+            w, h = int(seg.group(1)), int(seg.group(2))
+            if min(w, h) < 500:
+                new_w, new_h = _scale_up(w, h)
+                return url[:seg.start()] + f"/{new_w}x{new_h}/" + url[seg.end():]
+        if "bbci.co.uk" in url:
+            m = re.search(r"/(\d{2,4})/", url)
+            if m and int(m.group(1)) < 700:
+                return url[:m.start(1)] + "976" + url[m.end(1):]
+        upgraded = re.sub(r"([?&](?:width|w)=)\d+", r"\g<1>976", url)
+        if upgraded != url:
+            return upgraded
+        m2 = re.search(r"_(\d+)x(\d+)(\.\w+)(\?.*)?$", url)
+        if m2:
+            w, h = int(m2.group(1)), int(m2.group(2))
+            if min(w, h) < 500:
+                new_w, new_h = _scale_up(w, h)
+                return url[:m2.start(1)] + f"{new_w}x{new_h}" + m2.group(3) + (m2.group(4) or "")
+    except Exception:
+        pass
+    return url
+
+
+def _parse_iso(s: str):
+    """Parses an ISO8601 timestamp (ESPN's "published" field). Returns
+    an aware UTC datetime, or None if the string is missing/unparseable
+    — callers treat None as "age unknown", not "definitely stale"."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _parse_rss_date(s: str):
+    """Parses an RFC822 <pubDate> (BBC/Sky RSS). Returns an aware UTC
+    datetime, or None if missing/unparseable."""
+    if not s:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _is_fresh(published) -> bool:
+    """A headline older than config.TRANSFER_MAX_AGE_HOURS is never
+    posted as breaking news, independent of dedup state — this is what
+    stops a state.json wipe (e.g. a redeploy without a persistent
+    volume) from replaying an entire morning's stories hours later, and
+    what keeps this whole module "present going forward" only.
+    Unknown publish time (None) is treated as fresh — we only ever
+    suppress on a POSITIVE signal that something is old, never guess
+    an article is old just because we couldn't parse its date."""
+    if published is None:
+        return True
+    age_hours = (datetime.now(timezone.utc) - published).total_seconds() / 3600
+    return age_hours <= config.TRANSFER_MAX_AGE_HOURS
+
+
+# ══════════════════════════════════════════════════════════════════
+# CATEGORY PATTERNS — order matters: checked top to bottom, first
+# match wins, so a headline that could fit two buckets (rare) lands
+# in whichever is listed first.
+#
+# NOTE ON WHY THESE ARE REGEX, NOT LITERAL PHRASES:
+# Real headlines use every tense and phrasing under the sun —
+# "agreeing a deal to sign", "prefer to join" (no "s"), "knock out"
+# (present tense, not "knocked"), "extend his contract" (not "new
+# contract"). Each pattern below uses \b word-stems with optional
+# tense endings (s|ed|ing) so "sign/signs/signing/signed" all match
+# from one pattern, same idea for join/agree/reject/extend/etc.
+# ══════════════════════════════════════════════════════════════════
+
+_MANAGER_SACKING_PATTERNS = [
+    r"\bsack(?:ed|s|ing)?\b", r"\bfired\b",
+    r"\bstep(?:s|ped)?\s+down\b", r"\bresign(?:s|ed|ation)?\b",
+    r"\bpart(?:s|ed)?\s+ways\b", r"\brelieved\s+of\b",
+    r"\bleaves?\s+(?:his|her|their)\s+(?:role|post)\b",
+    r"\bout\s+as\s+(?:manager|head\s+coach|boss)\b",
+    r"\bsacking\b",
+]
+
+_MANAGER_TRANSFER_PATTERNS = [
+    r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?|hir(?:e|es|ed|ing))\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
+    r"\bnew\s+(?:manager|head\s+coach|boss)\b",
+    r"\btakes?\s+over\s+as\s+(?:manager|coach|boss)\b",
+    r"\binterim\s+(?:manager|boss|coach)\b",
+    r"\bagrees?\s+to\s+become\b[^.]{0,25}\bmanager\b",
+    r"\bset\s+to\s+become\b[^.]{0,25}\b(?:manager|head\s+coach|boss)\b",
+]
+
+_WORLDCUP_PATTERNS = [
+    r"\bretir(?:e|es|ed|ement)\b[^.]{0,30}\binternational\b",
+    r"\bhangs?\s+up\s+(?:his|her|their)\s+boots\b",
+    r"\bknock(?:s|ed)?\s+out\b", r"\bcrash(?:es|ed)?\s+out\b",
+    r"\belimin(?:ate|ates|ated|ation)\b", r"\bdump(?:s|ed)?\s+out\b",
+    r"\bexit(?:s|ed)?\s+(?:the\s+)?world\s+cup\b",
+    r"\bthrough\s+to\s+the\s+(?:final|semi|quarter)",
+    r"\breach(?:es|ed)?\s+the\s+(?:semi|quarter|final)",
+    r"\binto\s+the\s+(?:semi|quarter|final|last\s+16)",
+    r"\bbook(?:s|ed)?\s+(?:their|a)\s+place\b",
+    r"\bqualif(?:y|ies|ied|ication)\b[^.]{0,25}world\s+cup",
+    r"\bworld\s+cup\s+(?:draw|fixture|preview|qualifier)\b",
+    r"\blast\s+16\b",
+]
+
+# "Deal done" — the transfer is CONFIRMED/complete, not just rumoured
+# or in progress. Checked before the general player-transfer bucket so
+# "Here we go! Player completes move to Club" lands here, not there.
+_DEAL_DONE_PATTERNS = [
+    r"\bhere\s+we\s+go\b",
+    r"\bdone\s+deal\b",
+    r"\bofficial(?:ly)?\b[^.]{0,20}\bsign(?:s|ed|ing)?\b",
+    r"\bconfirm(?:s|ed)?\s+(?:the\s+)?(?:signing|transfer|deal|move)\b",
+    r"\bcomplete(?:s|d)?\s+(?:a\s+|his\s+|her\s+)?(?:move|transfer|signing)\b",
+    r"\bunveil(?:s|ed|ing)?\s+(?:new\s+)?(?:signing|signings)\b",
+    r"\bmedical\s+(?:completed|done|passed)\b",
+    r"\bagree(?:s|d)?\s+(?:a\s+)?(?:permanent\s+)?deal\b",
+    r"\bjoins?\s+on\s+a\s+(?:permanent|free|loan)\b",
+    r"\bsigns?\s+(?:a\s+)?(?:\d+[- ]year\s+)?(?:deal|contract)\s+with\b",
+]
+
+# General player-transfer activity that's happening but not (yet)
+# confirmed as done, and isn't pure speculation either — bids, medicals
+# being arranged, contract-extension talk, "close to" a move.
+_PLAYER_TRANSFER_PATTERNS = [
+    r"\bsign(?:s|ing|ed)?\b", r"\bjoin(?:s|ing|ed)?\b",
+    r"\bmove(?:s|d)?\s+to\b", r"\bswitch(?:es|ed)?\s+to\b",
+    r"\bloan(?:ed)?\b", r"\bmedical\b",
+    r"\btransfer(?:s|red)?\b",
+    r"\bbid(?:s)?\b", r"\ben?quiry\b", r"\breject(?:s|ed)?\b",
+    r"\b(?:extend|extends|extended|renew|renews|renewed)\b[^.]{0,25}\bcontract\b",
+    r"\bpersonal\s+terms\b",
+    r"\bclose\s+to\s+(?:joining|signing|a\s+move|a\s+deal)\b",
+    r"\bwant(?:s|ed)?\s+to\s+(?:sign|join)\b",
+    r"\bprefer(?:s|red)?\s+to\s+join\b", r"\bset\s+to\s+join\b",
+    r"\bannounces?\s+(?:his\s+|her\s+)?retirement\b", r"\bretires\b",
+]
+
+# Speculation only — nothing agreed, nothing confirmed. Checked last
+# within the transfer domain so it only catches what the more specific
+# buckets above didn't.
+_GOSSIP_PATTERNS = [
+    r"\brumou?rs?\b", r"\bgossip\b",
+    r"\blinked\s+with\b", r"\btarget(?:s|ed|ing)?\b",
+    r"\b(?:want(?:s|ed)?|keen|monitor(?:ing)?|admir(?:er|ing)?|ey(?:e|es|eing|ed)|track(?:ing)?|scout(?:ing)?)\b[^.]{0,100}\b(?:sign|join|deal|move|transfer)\b",
+    r"\binterest(?:ed)?\b",
+    r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
+]
+
+# category -> (compiled patterns, display label). Order matters:
+# manager sacking/transfer and World Cup are checked before
+# deal-done/player-transfer/gossip so a headline that could fit two
+# buckets lands in the more specific one.
+_CATEGORIES = (
+    ("manager_sacking",  [re.compile(p, re.I) for p in _MANAGER_SACKING_PATTERNS],  "Manager Sacking"),
+    ("manager_transfer", [re.compile(p, re.I) for p in _MANAGER_TRANSFER_PATTERNS], "Manager Transfer News"),
+    ("worldcup",         [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],         "World Cup News"),
+    ("deal_done",        [re.compile(p, re.I) for p in _DEAL_DONE_PATTERNS],        "Deal Done"),
+    ("player_transfer",  [re.compile(p, re.I) for p in _PLAYER_TRANSFER_PATTERNS],  "Player Transfer News"),
+    ("gossip",           [re.compile(p, re.I) for p in _GOSSIP_PATTERNS],           "Gossip"),
+)
+
+# Rolling sample of headlines that matched NO category this poll, so a
+# quiet day can be diagnosed at a glance instead of guessing — capped
+# small so logs don't flood. Cleared at the top of every check_new().
+_UNMATCHED_SAMPLE_CAP = 8
+_unmatched_sample: list = []
+
+
+def _classify_headline(headline: str, source: str = "") -> tuple:
+    """Returns (category_key, label) for the first matching bucket, or
+    (None, None) if the headline doesn't fit any tracked category. On
+    a miss, stashes the headline (capped) so check_new() can print a
+    sample of what's being dropped — the fastest way to see whether
+    the patterns need widening again in the future."""
+    for key, patterns, label in _CATEGORIES:
+        if any(p.search(headline) for p in patterns):
+            return key, label
+    if len(_unmatched_sample) < _UNMATCHED_SAMPLE_CAP:
+        _unmatched_sample.append(f"{source}: {headline}" if source else headline)
+    return None, None
+
+
+def _guess_league(headline: str) -> str:
+    low = headline.lower()
+    checks = [
+        ("world cup", "World Cup"),
+        ("premier league", "Premier League"), ("epl", "Premier League"),
+        ("la liga", "La Liga"), ("bundesliga", "Bundesliga"),
+        ("serie a", "Serie A"), ("ligue 1", "Ligue 1"), ("mls", "MLS"),
+    ]
+    for kw, name in checks:
+        if kw in low:
+            return name
+    return "Football"
+
+
+def _get_json(url: str, timeout: int = 10) -> dict | None:
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        print(f"[NEWS] HTTP {r.status_code}: {url[:90]}")
+    except Exception as e:
+        print(f"[NEWS] ❌ {e}")
+    return None
+
+
+_MEDIA_NS = "{http://search.yahoo.com/mrss/}"
+
+
+def _rss_image(item) -> str:
+    """Pulls an article image out of an RSS <item> if one is present.
+    BBC/Sky both commonly carry one of: <media:thumbnail url="...">,
+    <media:content url="...">, or <enclosure url="..." type="image/*">.
+    Returns "" if none is found — caller treats that as no photo. Any
+    URL found is run through _upgrade_image_url() to try for a larger
+    variant than the feed's default (usually small) thumbnail."""
+    thumb = item.find(f"{_MEDIA_NS}thumbnail")
+    if thumb is not None and thumb.get("url"):
+        return _upgrade_image_url(thumb.get("url"))
+    content = item.find(f"{_MEDIA_NS}content")
+    if content is not None and content.get("url"):
+        return _upgrade_image_url(content.get("url"))
+    for enc in item.findall("enclosure"):
+        if (enc.get("type") or "").startswith("image") and enc.get("url"):
+            return _upgrade_image_url(enc.get("url"))
     return ""
 
 
-def _td(name: str, is_intl: bool) -> str:
-    if is_intl:
-        f = team_flag(name)
-        return f"{f} {name}" if f else name
-    return f"🏟️ {name}"
+def _guardian_image(item) -> str:
+    """The Guardian's RSS carries several <media:content medium="image">
+    entries per item, each a different width variant (commonly ranging
+    from ~140px thumbnails up to 1900px). Picking the first one (like
+    _rss_image does for BBC/Sky, which only ever carry one candidate)
+    would grab whichever tiny thumbnail happens to be listed first —
+    so here we scan all of them and keep the widest, matching the
+    "largest available" approach _espn_article_image() already uses
+    for ESPN's own multi-size image lists. Falls back to _rss_image()
+    (thumbnail/enclosure) if no sized media:content is present."""
+    best_url, best_width = "", 0
+    for content in item.findall(f"{_MEDIA_NS}content"):
+        if (content.get("medium") or "").lower() != "image":
+            continue
+        url = content.get("url")
+        if not url:
+            continue
+        try:
+            width = int(content.get("width") or 0)
+        except ValueError:
+            width = 0
+        if width >= best_width:
+            best_width, best_url = width, url
+    return best_url or _rss_image(item)
 
 
-def _scoreline(match: dict, home_sc, away_sc) -> str:
-    is_intl = match.get("_is_intl", False)
-    h = _td(match["homeTeam"]["name"], is_intl)
-    a = _td(match["awayTeam"]["name"], is_intl)
-    return f"{h} {home_sc} - {away_sc} {a}"
-
-
-def _live_scoreline(match: dict) -> str:
-    """Current full-time score (used for live events like halftime / red card)."""
-    h  = match["score"]["fullTime"].get("home")
-    a  = match["score"]["fullTime"].get("away")
-    hs  = str(h) if h is not None else "0"
-    as_ = str(a) if a is not None else "0"
-    return _scoreline(match, hs, as_)
-
-
-def _final_scoreline(match: dict) -> str:
-    return _live_scoreline(match)
-
-
-def _minute(minute) -> str:
-    s = str(minute).strip().rstrip("'")
-    if ":" in s:
-        s = s.split(":")[0]
-    return s
-
-
-def _hashtags(match: dict) -> str:
-    h    = match["homeTeam"]["name"].replace(" ", "")
-    a    = match["awayTeam"]["name"].replace(" ", "")
-    comp = _comp_tag(match.get("_comp_name", ""))
-    return f"#{h} #{a} {comp} #MatchCornaLive"
-
-
-def _comp_header(match: dict) -> str:
-    flag = match.get("_comp_flag", "⚽")
-    name = match.get("_comp_name", "Football")
-    return f"{flag} {name}"
-
-
-# ══════════════════════════════════════════════════════════════════
-# SHARED SCREENSHOT-STYLE FORMATTER
-# ══════════════════════════════════════════════════════════════════
-# 🚩 {Header}
-#
-# {body lines}
-#
-# Source: {source}      ← only for stats-style posts (omitted for match events)
-# #tag1 #tag2 #tag3
-
-def _build_post(header: str, body: list[str], hashtags: list[str], source: str | None = None, marker: str = "🚩") -> str:
-    lines = [f"{marker} {header}"]
-    if body:
-        lines.append("")
-        lines.extend(body)
-    if source:
-        lines.append("")
-        lines.append(f"Source: {source}")
-    lines.append("")
-    lines.append(" ".join(f"#{t}" if not t.startswith('#') else t for t in hashtags[:3]))
-    return "\n".join(lines)
-
-
-def _match_hashtags(match: dict) -> list[str]:
-    """Exactly 3 tags: World Cup gets #WorldCup2026, others get their comp tag."""
-    home = match["homeTeam"]["name"].replace(" ", "")
-    away = match["awayTeam"]["name"].replace(" ", "")
-    if match.get("_is_world_cup"):
-        return ["WorldCup2026", home, away]
-    comp = _comp_tag(match.get("_comp_name", "")).lstrip("#")
-    return [comp, home, away]
-
-
-# ══════════════════════════════════════════════════════════════════
-# RATE LIMITING
-# ══════════════════════════════════════════════════════════════════
-
-_last_post_time  = 0.0
-_posts_this_hour = 0
-_hour_start      = time.time()
-
-
-def _rate_ok() -> bool:
-    global _posts_this_hour, _hour_start
-    now = time.time()
-    if now - _hour_start > 3600:
-        _posts_this_hour = 0
-        _hour_start      = now
-    if _posts_this_hour >= config.MAX_POSTS_PER_HOUR:
-        print(f"[POSTER] ⚠️  Hourly limit ({config.MAX_POSTS_PER_HOUR}) reached")
-        return False
-    gap = config.MIN_POST_GAP - (now - _last_post_time)
-    if gap > 0:
-        time.sleep(gap)
-    return True
-
-
-# ══════════════════════════════════════════════════════════════════
-# FACEBOOK POSTING
-# ══════════════════════════════════════════════════════════════════
-
-def post(message: str) -> bool:
-    """Post a text update to the Facebook page feed."""
-    global _last_post_time, _posts_this_hour
-    if not config.FB_PAGE_ID:
-        print(f"\n{'='*50}\n[FB POST]\n{message}\n{'='*50}\n")
-        return True
-    if not _rate_ok():
-        return False
+def _get_rss(url: str, timeout: int = 10, image_fn=_rss_image) -> list[dict]:
+    """Minimal RSS 2.0 parser via stdlib — returns
+    [{title, link, image, description, published}, ...]. `description`
+    is the feed's own <description> teaser text (raw, may contain HTML
+    — poster.py strips/cleans it before it goes in a caption), "" when
+    the feed doesn't carry one for that item. `image_fn` lets a
+    specific feed (e.g. Guardian) supply its own image-selection logic;
+    defaults to the generic thumbnail/content/enclosure lookup used by
+    BBC/Sky."""
     try:
-        r = requests.post(
-            f"https://graph.facebook.com/{_FB_API}/{config.FB_PAGE_ID}/feed",
-            data={"message": message, "access_token": config.FB_PAGE_ACCESS_TOKEN},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            _last_post_time   = time.time()
-            _posts_this_hour += 1
-            print(f"[POSTER] ✅ Posted! id={r.json().get('id','?')}")
-            return True
-        err = r.json().get("error", {})
-        print(f"[POSTER] ❌ {r.status_code}: {err.get('message', r.text[:120])}")
-        return False
+        r = requests.get(url, headers=HEADERS, timeout=timeout)
+        if r.status_code != 200:
+            print(f"[NEWS] HTTP {r.status_code}: {url[:90]}")
+            return []
+        root = ET.fromstring(r.content)
+        items = []
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            if title:
+                items.append({
+                    "title": title, "link": link, "image": image_fn(item),
+                    "description": (item.findtext("description") or "").strip(),
+                    "published": _parse_rss_date(item.findtext("pubDate")),
+                })
+        return items
+    except ET.ParseError as e:
+        print(f"[NEWS] RSS parse error ({url[:40]}): {e}")
+        return []
     except Exception as e:
-        print(f"[POSTER] ❌ {e}")
-        return False
+        print(f"[NEWS] ❌ {e}")
+        return []
 
 
-def post_photo(image_path: str, caption: str = "") -> bool:
-    """Upload a photo to the Facebook page."""
-    global _last_post_time, _posts_this_hour
-    if not config.FB_PAGE_ID:
-        print(f"\n{'='*50}\n[FB PHOTO] {image_path}\n{caption}\n{'='*50}\n")
-        return True
-    if not _rate_ok():
-        return False
-    try:
-        with open(image_path, "rb") as img_file:
-            r = requests.post(
-                f"https://graph.facebook.com/{_FB_API}/{config.FB_PAGE_ID}/photos",
-                data={"caption": caption, "access_token": config.FB_PAGE_ACCESS_TOKEN},
-                files={"source": img_file},
-                timeout=60,
-            )
-        if r.status_code == 200:
-            _last_post_time   = time.time()
-            _posts_this_hour += 1
-            print(f"[POSTER] ✅ Photo posted! id={r.json().get('id','?')}")
-            return True
-        err = r.json().get("error", {})
-        print(f"[POSTER] ❌ Photo {r.status_code}: {err.get('message', r.text[:120])}")
-        return False
-    except FileNotFoundError:
-        print(f"[POSTER] ❌ Image not found: {image_path}")
-        return False
-    except Exception as e:
-        print(f"[POSTER] ❌ Photo error: {e}")
-        return False
+def _espn_article_image(article: dict) -> str:
+    """ESPN news articles typically carry an "images" list, often with
+    several crops/sizes of the same photo. We want the LARGEST one —
+    grabbing whichever came first in the list is how you end up with a
+    144x81 thumbnail stretched to fill a 1080x1080 card, which is
+    exactly the blurry/pixelated result to avoid. Defensively parsed —
+    any shape mismatch just returns "" and the caller falls back to a
+    generated card rather than crashing."""
+    images = article.get("images") or []
+    best_url, best_area = "", 0
+    for im in images:
+        url = im.get("url")
+        if not url:
+            continue
+        area = (im.get("width") or 0) * (im.get("height") or 0)
+        if area >= best_area:
+            best_area, best_url = area, url
+    return best_url
 
 
-# ══════════════════════════════════════════════════════════════════
-# MESSAGE FORMATTERS
-# ══════════════════════════════════════════════════════════════════
+def _espn_candidates() -> list[dict]:
+    """Polls every club league in config.TRANSFER_LEAGUES PLUS the
+    World Cup slug (config.WORLD_CUP_SLUG) — this is what pulls in
+    World Cup knockout results, retirements, and upcoming-fixture
+    previews, not just club transfer gossip."""
+    items = []
+    slugs = dict(config.TRANSFER_LEAGUES)
+    slugs[config.WORLD_CUP_SLUG] = "World Cup"
 
-def fmt_daily_preview(matches: list) -> str:
-    from datetime import datetime, timezone
-    now     = datetime.now(timezone.utc)
-    day_num  = now.strftime("%d").lstrip("0") or "0"
-    date_str = f"{now.strftime('%A')} {day_num} {now.strftime('%B')}"
-
-    if not matches:
-        return (
-            f"📅 Today's Fixtures | {date_str}\n"
-            "No big matches today. Check back tomorrow!\n"
-            "#MatchCornaLive"
-        )
-
-    sorted_m = sorted(matches, key=lambda m: m.get("utcDate", ""))
-    by_comp: dict[str, list] = {}
-    for m in sorted_m:
-        comp = m.get("_comp_name", "Football")
-        by_comp.setdefault(comp, []).append(m)
-
-    lines = [f"📅 Today's Fixtures | {date_str}"]
-    for comp, comp_matches in by_comp.items():
-        flag    = comp_matches[0].get("_comp_flag", "⚽")
-        is_intl = comp_matches[0].get("_is_intl", False)
-        lines.append(f"{flag} {comp}")
-        for m in comp_matches:
-            h = _td(m["homeTeam"]["name"], is_intl)
-            a = _td(m["awayTeam"]["name"], is_intl)
-            try:
-                ko = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
-                t  = ko.strftime("%H:%M")
-            except Exception:
-                t = "TBD"
-            lines.append(f"{h} vs {a} ({t})")
-
-    lines.append("#MatchCornaLive")
-    return "\n".join(lines)
+    raw_count = 0
+    for slug, league_name in slugs.items():
+        data = _get_json(f"{ESPN_NEWS_API}/{slug}/news")
+        if not data:
+            continue
+        for article in data.get("articles", []):
+            headline = article.get("headline", "")
+            raw_count += 1 if headline else 0
+            category, label = _classify_headline(headline, "ESPN") if headline else (None, None)
+            if not category:
+                continue
+            items.append({
+                "key":       f"news:{category}:espn:{article.get('id', headline)}",
+                "headline":  headline,
+                "category":  category,
+                "category_label": label,
+                "league":    league_name,
+                "link":      (article.get("links", {}).get("web", {}) or {}).get("href", ""),
+                "image":     _espn_article_image(article),
+                "description": article.get("description") or article.get("shortDescription") or "",
+                "published": _parse_iso(article.get("published") or article.get("lastModified")),
+                "source":    "ESPN",
+            })
+    print(f"[NEWS] ESPN: {raw_count} headlines fetched, {len(items)} matched a category")
+    return items
 
 
-def fmt_lineup(match: dict) -> str:
-    is_intl = match.get("_is_intl", False)
-    h = _td(match["homeTeam"]["name"], is_intl)
-    a = _td(match["awayTeam"]["name"], is_intl)
-    lines = [
-        f"📋 LINEUPS | {_comp_header(match)}",
-        f"{h} vs {a}",
-    ]
-    for lu in match.get("lineups", []):
-        team      = lu.get("team", "")
-        formation = lu.get("formation", "")
-        players   = [p["player"].get("name", "?") for p in lu.get("startXI", [])]
-        if players:
-            header = f"{team} ({formation})" if formation else team
-            lines.append(f"{header}: {', '.join(players)}")
-    lines.append(_hashtags(match))
-    return "\n".join(lines)
+def _bbc_candidates() -> list[dict]:
+    items = []
+    raw = _get_rss(BBC_FOOTBALL_RSS)
+    for entry in raw:
+        category, label = _classify_headline(entry["title"], "BBC")
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:bbc:{entry['link'] or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     entry["link"],
+            "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
+            "published": entry.get("published"),
+            "source":   "BBC Sport",
+        })
+    print(f"[NEWS] BBC: {len(raw)} RSS entries fetched, {len(items)} matched a category")
+    return items
 
 
-def _plain_score_line(match: dict, home_sc, away_sc) -> str:
-    """Plain team names + tight score, matching the screenshot style
-    (no per-team flags in the header line — flags are used in ranked lists)."""
-    h = match["homeTeam"]["name"]
-    a = match["awayTeam"]["name"]
-    return f"{h} {home_sc}-{away_sc} {a}"
+def _sky_candidates() -> list[dict]:
+    items = []
+    raw_all = _get_rss(SKY_SPORTS_RSS)
+    raw_football = 0
+    for entry in raw_all:
+        link = entry["link"]
+        # Mixed feed (darts/cricket/F1/etc.) — keep football only
+        if "/football/" not in link:
+            continue
+        raw_football += 1
+        category, label = _classify_headline(entry["title"], "Sky")
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:sky:{link or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     link,
+            "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
+            "published": entry.get("published"),
+            "source":   "Sky Sports",
+        })
+    print(f"[NEWS] Sky: {len(raw_all)} RSS entries fetched ({raw_football} football), {len(items)} matched a category")
+    return items
 
 
-def fmt_kickoff(match: dict) -> str:
-    header = f"Live: {_plain_score_line(match, 0, 0)} — Kickoff!"
-    return _build_post(header, [], _match_hashtags(match))
+def _guardian_candidates() -> list[dict]:
+    items = []
+    # Guardian's feed carries several sized <media:content> variants per
+    # item (unlike BBC/Sky's single thumbnail) — _guardian_image picks
+    # the widest one so photo cards get the sharpest source image
+    # available, same "largest wins" rule ESPN's own image list uses.
+    raw = _get_rss(GUARDIAN_FOOTBALL_RSS, image_fn=_guardian_image)
+    for entry in raw:
+        category, label = _classify_headline(entry["title"], "Guardian")
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:guardian:{entry['link'] or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     entry["link"],
+            "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
+            "published": entry.get("published"),
+            "source":   "The Guardian",
+        })
+    print(f"[NEWS] Guardian: {len(raw)} RSS entries fetched, {len(items)} matched a category")
+    return items
 
 
-def fmt_goal(match: dict, goal: dict) -> str:
-    scorer = goal["scorer"]["name"]
-    minute = _minute(goal["minute"])
+def _90min_candidates() -> list[dict]:
+    items = []
+    # 90min is football-only (unlike Sky's mixed feed), so no URL filtering
+    # needed — every entry is in-scope, same as BBC/Guardian.
+    raw = _get_rss(NINETY_MIN_RSS)
+    for entry in raw:
+        category, label = _classify_headline(entry["title"], "90min")
+        if not category:
+            continue
+        items.append({
+            "key":      f"news:{category}:90min:{entry['link'] or entry['title']}",
+            "headline": entry["title"],
+            "category": category,
+            "category_label": label,
+            "league":   _guess_league(entry["title"]),
+            "link":     entry["link"],
+            "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
+            "published": entry.get("published"),
+            "source":   "90min",
+        })
+    print(f"[NEWS] 90min: {len(raw)} RSS entries fetched, {len(items)} matched a category")
+    return items
 
-    sc = goal.get("score", [])
-    if sc and len(sc) == 2 and sc[0] is not None:
-        h_sc, a_sc = sc[0], sc[1]
-    else:
-        h_sc, a_sc = 0, 0
-        for g in match.get("goals", []):
-            if g["isHome"]:
-                h_sc += 1
+
+def check_new(already_seen: set) -> list[dict]:
+    """
+    Polls all five sources, returns news items (manager sackings,
+    manager transfers, World Cup news, deal-done, player transfers,
+    gossip) not present in `already_seen` (caller marks them seen
+    after successfully posting). Combined and deduped by key across
+    sources. Anything older than config.TRANSFER_MAX_AGE_HOURS is
+    dropped regardless of dedup state — this module never surfaces
+    the past.
+    """
+    candidates = []
+    per_source_counts = {}
+    _unmatched_sample.clear()
+    for fn in (_espn_candidates, _bbc_candidates, _sky_candidates, _guardian_candidates, _90min_candidates):
+        try:
+            result = fn()
+            per_source_counts[fn.__name__] = len(result)
+            candidates.extend(result)
+        except Exception as e:
+            per_source_counts[fn.__name__] = f"FAILED: {e}"
+            print(f"[NEWS] ⚠️  {fn.__name__} failed: {e}")
+
+    dedup_skipped, stale_skipped = 0, 0
+    stale_ages = []
+    new_items, seen_this_pass = [], set()
+    for item in candidates:
+        if item["key"] in already_seen or item["key"] in seen_this_pass:
+            dedup_skipped += 1
+            continue
+        if not _is_fresh(item.get("published")):
+            stale_skipped += 1
+            pub = item.get("published")
+            if pub is not None:
+                age_h = round((datetime.now(timezone.utc) - pub).total_seconds() / 3600, 1)
+                stale_ages.append(f"{item['source']}/{item['category']}:{age_h}h")
             else:
-                a_sc += 1
-            if g is goal:
-                break
+                stale_ages.append(f"{item['source']}/{item['category']}:UNPARSEABLE")
+            continue  # too old to post as "breaking" regardless of dedup state
+        seen_this_pass.add(item["key"])
+        new_items.append(item)
 
-    header = f"Live: {_plain_score_line(match, h_sc, a_sc)}"
-    body = [f"⚽ Goal: {scorer} ({minute}')"]
-    assist = goal.get("assist", {}).get("name")
-    if assist:
-        body.append(f"🎯 Assist: {assist}")
-
-    return _build_post(header, body, _match_hashtags(match))
-
-
-def fmt_extratime(match: dict) -> str:
-    return "\n".join([
-        f"⏱️ EXTRA TIME | {_comp_header(match)}",
-        _final_scoreline(match),
-        _hashtags(match),
-    ])
-
-
-def fmt_halftime(match: dict) -> str:
-    """
-    Half Time: Arsenal 1-0 Chelsea
-    ⚽ Arsenal: Saka 34' (assist: Odegaard)
-    #Arsenal #Chelsea #PL #MatchCornaLive
-    """
-    header = f"Half Time: {_plain_score_line(match, *_current_score(match))}"
-    body = []
-
-    home_goals = [g for g in match.get("goals", []) if     g["isHome"]]
-    away_goals = [g for g in match.get("goals", []) if not g["isHome"]]
-
-    def _goal_line(g: dict) -> str:
-        line = f"{g['scorer']['name']} {_minute(g['minute'])}'"
-        assist = g.get("assist", {}).get("name")
-        if assist:
-            line += f" (assist: {assist})"
-        return line
-
-    if home_goals:
-        body.append(f"⚽ {match['homeTeam']['name']}: " + ", ".join(_goal_line(g) for g in home_goals))
-    if away_goals:
-        body.append(f"⚽ {match['awayTeam']['name']}: " + ", ".join(_goal_line(g) for g in away_goals))
-    if not body:
-        body.append("No goals yet")
-
-    return _build_post(header, body, _match_hashtags(match), marker="⏸️")
-
-
-def fmt_redcard(match: dict, booking: dict) -> str:
-    """
-    Live: Arsenal 1-0 Chelsea
-    🟥 Mbappe 60'
-    #Arsenal #Chelsea #PL #MatchCornaLive
-    """
-    header = f"Live: {_plain_score_line(match, *_current_score(match))}"
-    player = booking.get("player", {}).get("name", "Unknown")
-    minute = _minute(booking.get("minute", "?"))
-    body = [f"🟥 {player} {minute}'"]
-    return _build_post(header, body, _match_hashtags(match), marker="🟥")
-
-
-# ══════════════════════════════════════════════════════════════════
-# NON-MATCHDAY CONTENT FORMATTERS (World Cup filler + upcoming fixtures)
-# ══════════════════════════════════════════════════════════════════
-
-def fmt_top_scorers(scorers: list, country_of: dict | None = None) -> str:
-    """
-    🚩 World Cup Top Scorers:
-
-    🇦🇷 1. L. Messi - 6
-    🇫🇷 2. Mbappe - 6
-    🇳🇴 3. Haaland - 5
-
-    Source: FIFA
-    #WorldCup2026 #GoldenBoot #Football
-
-    `country_of` optionally maps player name -> country name for the flag.
-    """
-    country_of = country_of or {}
-    body = []
-    for s in scorers[:5]:
-        flag = team_flag(country_of.get(s["player"], s.get("team", "")))
-        flag_prefix = f"{flag} " if flag else ""
-        body.append(f"{flag_prefix}{s['rank']}. {s['player']} - {s['goals']}")
-
-    return _build_post(
-        "World Cup Top Scorers:", body,
-        ["WorldCup2026", "GoldenBoot", "Football"],
-        source="FIFA",
+    print(
+        f"[NEWS] poll summary: candidates_by_source={per_source_counts} "
+        f"total_candidates={len(candidates)} already_seen_skipped={dedup_skipped} "
+        f"stale_skipped={stale_skipped} new_items={len(new_items)}"
     )
-
-
-
-# ══════════════════════════════════════════════════════════════════
-# HEADLINE SIMPLIFICATION — best-effort plain-English pass
-# ══════════════════════════════════════════════════════════════════
-# Source headlines (ESPN/BBC/Guardian/90min) are written for native
-# English-speaking readers and often pack a lot into one dense
-# sentence. This is a rule-based pass, NOT full rewriting — genuinely
-# simplifying a complex sentence needs an LLM step, which this project
-# intentionally doesn't use (README: "100% free — no paid APIs"). If
-# headlines still read hard after this, a small paid rewrite call is
-# the real next step to consider, not piling on more regex here.
-
-# Safe, unambiguous whole-phrase swaps only — nothing that risks
-# mangling grammar. Checked case-insensitively.
-_HEADLINE_SIMPLIFICATIONS = [
-    (r"\bwould prefer to join\b",                 "wants to join"),
-    (r"\bclose to agreeing a deal to sign\b",      "close to signing"),
-    (r"\bunprofessional\b",                        "rude"),
-    (r"\brelieved of (?:his|her|their) duties\b",  "sacked"),
-    (r"\ban? enquiry\b",                           "an approach"),
-    (r"\bconfirmed as\b",                          "named as"),
-    (r"\bpersonal terms\b",                        "personal contract details"),
-    (r"\bhighly[- ]rated\b",                       "highly rated"),
-]
-
-
-def _strip_trailing_attribution(text: str) -> str:
-    """Drops wire-style trailing attribution clutter like
-    ' - Agent Basia Michaels' that adds no meaning for someone
-    scanning a Facebook caption."""
-    return re.sub(r"\s-\s(?:Agent|Source|Via)\s+[^-]+$", "", text, flags=re.I).strip()
-
-
-def _soft_wrap(text: str, max_len: int = 90) -> str:
-    """A long, dense headline gets broken onto a second line at the
-    comma/semicolon nearest the midpoint — same words, easier to scan
-    on a phone feed. Never splits mid-word, never makes more than 2
-    lines, and leaves short headlines untouched."""
-    if len(text) <= max_len:
-        return text
-    mid = len(text) // 2
-    candidates = [m.start() for m in re.finditer(r",\s|;\s", text)]
-    if not candidates:
-        return text
-    split_at = min(candidates, key=lambda i: abs(i - mid))
-    return text[:split_at + 1].rstrip(",; ") + "\n" + text[split_at + 1:].strip()
-
-
-def simplify_headline(text: str) -> str:
-    """Strip wire clutter, swap a short list of harder words/phrases
-    for simpler equivalents, then soft-wrap if still a long run-on."""
-    result = _strip_trailing_attribution(text)
-    for pattern, replacement in _HEADLINE_SIMPLIFICATIONS:
-        result = re.sub(pattern, replacement, result, flags=re.I)
-    return _soft_wrap(result)
-
-
-def _strip_urls(text: str) -> str:
-    """Defensive — headlines shouldn't contain URLs, but strip any if present."""
-    return re.sub(r'https?://\S+', '', text).strip()
-
-
-# category -> (header, marker, primary hashtag). Used by fmt_football_news
-# so every news flavor gets its own header/marker instead of everything
-# reading as generic "BREAKING NEWS".
-_NEWS_CATEGORY_STYLE = {
-    "player_transfer":  ("TRANSFER NEWS",         "🚨", "TransferNews"),
-    "manager_sacking":  ("MANAGER SACKING",       "🔴", "ManagerSacking"),
-    "manager_transfer": ("MANAGER NEWS",          "📋", "ManagerNews"),
-    "deal_done":        ("DEAL DONE",             "✅", "DealDone"),
-    "gossip":           ("GOSSIP",                "🗣️", "Gossip"),
-    "worldcup":         ("WORLD CUP NEWS",        "🌍", "WorldCup2026"),
-}
-
-
-# One-sentence framing per category, used only when the source feed
-# gave no usable <description> teaser (see _clean_description below).
-# Deliberately generic/non-fabricated — an honest framing line built
-# from data we actually have (category, league), NOT an invented fact
-# about the story.
-_STORY_CONTEXT = {
-    "player_transfer":  "This is a developing transfer story in the {league} — expect more twists as talks continue.",
-    "manager_sacking":  "A big change in the {league} dugout. We'll bring you the next update as soon as more is confirmed.",
-    "manager_transfer": "A new man in the {league} hot seat — follow along as the appointment takes shape.",
-    "deal_done":        "It's official — here's the latest confirmed move in the {league}.",
-    "gossip":           "Just talk for now in the {league} — nothing confirmed yet, but worth keeping an eye on.",
-    "worldcup":         "A big World Cup moment — follow along for how this shapes the tournament picture.",
-}
-
-
-def _clean_description(desc: str, headline: str) -> str:
-    """Turns a raw RSS/ESPN <description> field into a short, clean
-    teaser sentence for the caption: strips HTML tags/entities,
-    collapses whitespace, caps length so it stays a genuine "teaser"
-    rather than a full reproduced paragraph, and drops it entirely if
-    it's just a restatement of the headline (common on some feeds)."""
-    if not desc:
-        return ""
-    desc = re.sub(r"<[^>]+>", " ", desc)
-    desc = re.sub(r"&[a-zA-Z#0-9]+;", " ", desc)
-    desc = re.sub(r"\s+", " ", desc).strip()
-    if not desc:
-        return ""
-    if len(desc) > 220:
-        desc = desc[:217].rsplit(" ", 1)[0] + "..."
-    if desc.lower() in headline.lower() or headline.lower() in desc.lower():
-        return ""
-    return desc
-
-
-def fmt_football_news(item: dict) -> str:
-    """
-    Present/future football news only — manager sackings, manager
-    transfers/appointments, World Cup retirements/knockouts/upcoming
-    fixtures, confirmed ("deal done") transfers, in-progress player
-    transfers, and gossip/speculation. Header, marker, and primary
-    hashtag adapt to item["category"] so each flavor reads distinctly
-    on the page.
-
-    Uses the source feed's own <description>/shortDescription teaser
-    (item["description"]) for a short natural-language summary line
-    under the headline, instead of just repeating the headline. Falls
-    back to a generic one-line framing sentence when the feed gave no
-    usable teaser (missing, empty, or just a restatement of the
-    headline) — this must never leave the caption looking broken just
-    because a particular feed item had no description.
-    """
-    category = item.get("category", "player_transfer")
-    header, marker, primary_tag = _NEWS_CATEGORY_STYLE.get(
-        category, _NEWS_CATEGORY_STYLE["player_transfer"]
-    )
-    headline = simplify_headline(_strip_urls(item.get("headline") or item.get("title", "")))
-    desc = _clean_description(item.get("description", ""), headline)
-    if desc:
-        body = [headline, "", desc]
-    else:
-        context = _STORY_CONTEXT.get(category, _STORY_CONTEXT["player_transfer"]).format(
-            league=item.get("league") or "football"
-        )
-        body = [headline, "", context]
-    league_tag = item["league"].replace(" ", "")
-    return _build_post(
-        header, body,
-        [primary_tag, league_tag, "Football"],
-        source=item.get("source", "ESPN"),
-        marker=marker,
-    )
-
-
-def fmt_upcoming_fixtures(fixtures: list) -> str:
-    """
-    📅 Upcoming Fixtures post — next 48 hours grouped by date then competition.
-    """
-    from datetime import datetime, timezone
-
-    if not fixtures:
-        return ""
-
-    lines = ["📅 Upcoming Fixtures — Next 48 Hours"]
-
-    by_date: dict[str, list] = {}
-    for f in fixtures:
-        d = f["utcDate"][:10]
-        by_date.setdefault(d, []).append(f)
-
-    for date_str, day_fixtures in sorted(by_date.items()):
-        try:
-            dt        = datetime.fromisoformat(date_str)
-            day_label = dt.strftime("%A %d %B")
-        except Exception:
-            day_label = date_str
-        lines.append(f"\n📆 {day_label}")
-
-        by_comp: dict[str, list] = {}
-        for f in day_fixtures:
-            by_comp.setdefault(f["comp"], []).append(f)
-
-        for comp, comp_fixtures in by_comp.items():
-            cflag = comp_fixtures[0].get("comp_flag", "⚽")
-            lines.append(f"{cflag} {comp}")
-            for f in comp_fixtures[:5]:
-                try:
-                    ko = datetime.fromisoformat(
-                        f["utcDate"].replace("Z", "+00:00")
-                    )
-                    t  = ko.strftime("%H:%M")
-                except Exception:
-                    t = "TBD"
-                lines.append(f"  {f['home']} vs {f['away']}  ({t} UTC)")
-
-    lines.append("\n#MatchCornaLive")
-    return "\n".join(lines)
-
-
-def scorers_line(match: dict, side: str | None = None) -> str:
-    """Compact 'Player 27'\\nPlayer 61'' string of goals in the match,
-    sorted by minute — for embedding directly on the scoreboard card
-    image (graphics.render_scoreboard_card's home_event_line/
-    away_event_line params), separate from the fuller per-team
-    breakdown fmt_fulltime() uses in the post caption itself.
-
-    `side` optionally filters to just "home" or "away" goals, so the
-    card can draw each team's scorers under that team's own crest
-    instead of one combined line down the center. Lines are newline-
-    joined (not space-joined) so multiple scorers on the same side
-    stack vertically under a narrower per-crest column."""
-    def _sort_key(g: dict):
-        try:
-            return int(_minute(g["minute"]))
-        except (TypeError, ValueError):
-            return 0
-    goals = match.get("goals", [])
-    if side == "home":
-        goals = [g for g in goals if g["isHome"]]
-    elif side == "away":
-        goals = [g for g in goals if not g["isHome"]]
-    goals = sorted(goals, key=_sort_key)
-    return "\n".join(f"{g['scorer']['name']} {_minute(g['minute'])}'" for g in goals)
-
-
-def fmt_fulltime(match: dict) -> str:
-    prefix = "Full Time"
-    if match.get("_went_to_penalties"):
-        prefix = "Full Time (Penalties)"
-    elif match.get("_went_to_et"):
-        prefix = "Full Time (AET)"
-
-    header = f"{prefix}: {_plain_score_line(match, *_current_score(match))}"
-    body = []
-
-    if match.get("_went_to_penalties"):
-        ph, pa = match.get("_penalty_home"), match.get("_penalty_away")
-        if ph is not None and pa is not None:
-            winner = match["homeTeam"]["name"] if ph > pa else match["awayTeam"]["name"]
-            body.append(f"🏆 {winner} win {ph}-{pa} on penalties")
-            body.append("")
-
-    home_goals = [g for g in match.get("goals", []) if     g["isHome"]]
-    away_goals = [g for g in match.get("goals", []) if not g["isHome"]]
-
-    def _goal_line(g: dict) -> str:
-        line = f"{g['scorer']['name']} {_minute(g['minute'])}'"
-        assist = g.get("assist", {}).get("name")
-        if assist:
-            line += f" (assist: {assist})"
-        return line
-
-    if home_goals:
-        body.append(f"⚽ {match['homeTeam']['name']}: " + ", ".join(_goal_line(g) for g in home_goals))
-    if away_goals:
-        body.append(f"⚽ {match['awayTeam']['name']}: " + ", ".join(_goal_line(g) for g in away_goals))
-
-    return _build_post(header, body, _match_hashtags(match), marker="🏁")
-
-
-def _current_score(match: dict) -> tuple:
-    h = match["score"]["fullTime"].get("home")
-    a = match["score"]["fullTime"].get("away")
-    return (h if h is not None else 0, a if a is not None else 0)
-
-
-def fmt_var_disallowed(match: dict, var_event: dict) -> str:
-    """
-    🚩 No Goal — VAR Review: Germany vs Paraguay
-
-    🚨 Disallowed: J. Tah (105') — Goal Disallowed
-    Reason: Foul in the build-up
-
-    #WorldCup2026 #VAR #NoGoal
-    """
-    header = f"No Goal — VAR Review: {match['homeTeam']['name']} vs {match['awayTeam']['name']}"
-    minute = _minute(var_event.get("minute", "?"))
-    body = [f"🚨 Disallowed: {var_event['player']} ({minute}') — {var_event.get('team', '')}"]
-    reason = var_event.get("reason", "")
-    if reason and reason.lower() not in ("var review", ""):
-        body.append(f"Reason: {reason}")
-
-    if match.get("_is_world_cup"):
-        tags = ["WorldCup2026", "VAR", "NoGoal"]
-    else:
-        tags = [_comp_tag(match.get("_comp_name", "")).lstrip("#"), "VAR", "NoGoal"]
-
-    return _build_post(header, body, tags, marker="❌")
+    if stale_ages:
+        print(f"[NEWS] stale item ages: {stale_ages}")
+    if _unmatched_sample:
+        print(f"[NEWS] sample of headlines that matched NO category this poll "
+              f"(widen the patterns if these look like real transfer/manager/"
+              f"World Cup/gossip stories): {_unmatched_sample}")
+    return new_items
