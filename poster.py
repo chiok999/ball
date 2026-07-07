@@ -457,6 +457,48 @@ def fmt_extratime(match: dict) -> str:
     ])
 
 
+def fmt_halftime(match: dict) -> str:
+    """
+    Half Time: Arsenal 1-0 Chelsea
+    ⚽ Arsenal: Saka 34' (assist: Odegaard)
+    #Arsenal #Chelsea #PL #MatchCornaLive
+    """
+    header = f"Half Time: {_plain_score_line(match, *_current_score(match))}"
+    body = []
+
+    home_goals = [g for g in match.get("goals", []) if     g["isHome"]]
+    away_goals = [g for g in match.get("goals", []) if not g["isHome"]]
+
+    def _goal_line(g: dict) -> str:
+        line = f"{g['scorer']['name']} {_minute(g['minute'])}'"
+        assist = g.get("assist", {}).get("name")
+        if assist:
+            line += f" (assist: {assist})"
+        return line
+
+    if home_goals:
+        body.append(f"⚽ {match['homeTeam']['name']}: " + ", ".join(_goal_line(g) for g in home_goals))
+    if away_goals:
+        body.append(f"⚽ {match['awayTeam']['name']}: " + ", ".join(_goal_line(g) for g in away_goals))
+    if not body:
+        body.append("No goals yet")
+
+    return _build_post(header, body, _match_hashtags(match), marker="⏸️")
+
+
+def fmt_redcard(match: dict, booking: dict) -> str:
+    """
+    Live: Arsenal 1-0 Chelsea
+    🟥 Mbappe 60'
+    #Arsenal #Chelsea #PL #MatchCornaLive
+    """
+    header = f"Live: {_plain_score_line(match, *_current_score(match))}"
+    player = booking.get("player", {}).get("name", "Unknown")
+    minute = _minute(booking.get("minute", "?"))
+    body = [f"🟥 {player} {minute}'"]
+    return _build_post(header, body, _match_hashtags(match), marker="🟥")
+
+
 # ══════════════════════════════════════════════════════════════════
 # NON-MATCHDAY CONTENT FORMATTERS (World Cup filler + upcoming fixtures)
 # ══════════════════════════════════════════════════════════════════
@@ -487,33 +529,6 @@ def fmt_top_scorers(scorers: list, country_of: dict | None = None) -> str:
         source="FIFA",
     )
 
-
-def fmt_win_probability(match: dict, probs: dict) -> str:
-    """
-    🚩 Belgium - Senegal Winner Probability:
-
-    🇧🇪 Belgium - 46.8%
-    🤝 Draw - 27.5%
-    🇸🇳 Senegal - 25.7%
-
-    Source: ClubElo
-    #WorldCup2026 #Prediction #Football
-    """
-    home = match["homeTeam"]["name"]
-    away = match["awayTeam"]["name"]
-    hflag = team_flag(home)
-    aflag = team_flag(away)
-
-    body = [
-        f"{hflag + ' ' if hflag else ''}{home} - {probs['home']}%",
-        f"🤝 Draw - {probs['draw']}%",
-        f"{aflag + ' ' if aflag else ''}{away} - {probs['away']}%",
-    ]
-
-    tags = ["WorldCup2026", "Prediction", "Football"] if match.get("_is_world_cup") else \
-           [_comp_tag(match.get("_comp_name", "")).lstrip("#"), "Prediction", "Football"]
-
-    return _build_post(f"{home} - {away} Winner Probability:", body, tags, source="ClubElo (Elo ratings)")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -578,85 +593,80 @@ def _strip_urls(text: str) -> str:
 
 
 # category -> (header, marker, primary hashtag). Used by fmt_football_news
-# so every news flavor (transfer, manager, World Cup, reaction) gets its
-# own header/marker instead of everything reading as "BREAKING NEWS".
+# so every news flavor gets its own header/marker instead of everything
+# reading as generic "BREAKING NEWS".
 _NEWS_CATEGORY_STYLE = {
-    "transfer":  ("BREAKING NEWS",        "🚨", "TransferNews"),
-    "manager":   ("MANAGER NEWS",         "📋", "ManagerNews"),
-    "worldcup":  ("WORLD CUP NEWS",       "🌍", "WorldCup2026"),
-    "interview": ("POST-MATCH REACTION",  "🎙️", "PostMatch"),
-    "tracker":   ("PLAYER TRACKER",       "📊", "PlayerTracker"),
+    "player_transfer":  ("TRANSFER NEWS",         "🚨", "TransferNews"),
+    "manager_sacking":  ("MANAGER SACKING",       "🔴", "ManagerSacking"),
+    "manager_transfer": ("MANAGER NEWS",          "📋", "ManagerNews"),
+    "deal_done":        ("DEAL DONE",             "✅", "DealDone"),
+    "gossip":           ("GOSSIP",                "🗣️", "Gossip"),
+    "worldcup":         ("WORLD CUP NEWS",        "🌍", "WorldCup2026"),
 }
 
 
-# One-sentence framing per category, added under the headline so the
-# caption reads as a short story instead of just repeating the
-# headline. Deliberately generic/non-fabricated — these are honest
-# framing lines built from data we actually have (category, league),
-# NOT invented facts about the story. A real "what happened and why
-# it matters" summary would need the full article text, which this
-# bot doesn't fetch (RSS only gives headlines) and copyright rules
-# mean we can't reproduce/closely paraphrase substantial article text
-# anyway — so this stays a framing sentence, not a rewritten article.
+# One-sentence framing per category, used only when the source feed
+# gave no usable <description> teaser (see _clean_description below).
+# Deliberately generic/non-fabricated — an honest framing line built
+# from data we actually have (category, league), NOT an invented fact
+# about the story.
 _STORY_CONTEXT = {
-    "transfer":  "This is a developing transfer story in the {league} — expect more twists as talks continue.",
-    "manager":   "A big call in the {league} dugout. We'll bring you the next update as soon as more is confirmed.",
-    "worldcup":  "A big World Cup moment — follow along for how this shapes the tournament picture.",
-    "interview": "Straight from the player — reactions like this often shape the next few days of team news.",
-    "tracker":   "A quick look at how things stand right now — check back for the next update.",
+    "player_transfer":  "This is a developing transfer story in the {league} — expect more twists as talks continue.",
+    "manager_sacking":  "A big change in the {league} dugout. We'll bring you the next update as soon as more is confirmed.",
+    "manager_transfer": "A new man in the {league} hot seat — follow along as the appointment takes shape.",
+    "deal_done":        "It's official — here's the latest confirmed move in the {league}.",
+    "gossip":           "Just talk for now in the {league} — nothing confirmed yet, but worth keeping an eye on.",
+    "worldcup":         "A big World Cup moment — follow along for how this shapes the tournament picture.",
 }
 
 
-def _facts_to_bullets(facts: dict) -> list:
-    """Turns extracted article facts into short plain-English bullet
-    lines. Deliberately terse — one fact per line reads easier for a
-    reader skimming a phone feed than a rewritten paragraph would,
-    which is also exactly why this is safer copyright-wise (see
-    article.py's module docstring for the full reasoning). Priority
-    order: a direct quote is the most compelling single line, so it's
-    listed first and survives the cap even if a fee/duration also
-    matched."""
-    candidates = []
-    if "quote" in facts:
-        candidates.append(f'🗣️ "{facts["quote"]}"')
-    if "fee" in facts:
-        candidates.append(f"💰 Reported fee: {facts['fee']}")
-    if "duration" in facts:
-        candidates.append(f"📝 Contract length: {facts['duration']}")
-    if "until" in facts and "duration" not in facts:
-        candidates.append(f"📅 Deal reportedly runs {facts['until']}")
-    return candidates[:2]  # cap so the caption stays under ~10 lines total
+def _clean_description(desc: str, headline: str) -> str:
+    """Turns a raw RSS/ESPN <description> field into a short, clean
+    teaser sentence for the caption: strips HTML tags/entities,
+    collapses whitespace, caps length so it stays a genuine "teaser"
+    rather than a full reproduced paragraph, and drops it entirely if
+    it's just a restatement of the headline (common on some feeds)."""
+    if not desc:
+        return ""
+    desc = re.sub(r"<[^>]+>", " ", desc)
+    desc = re.sub(r"&[a-zA-Z#0-9]+;", " ", desc)
+    desc = re.sub(r"\s+", " ", desc).strip()
+    if not desc:
+        return ""
+    if len(desc) > 220:
+        desc = desc[:217].rsplit(" ", 1)[0] + "..."
+    if desc.lower() in headline.lower() or headline.lower() in desc.lower():
+        return ""
+    return desc
 
 
-def fmt_football_news(item: dict, article_facts: dict | None = None) -> str:
+def fmt_football_news(item: dict) -> str:
     """
-    Present/future football news only — transfers, manager sackings
-    and appointments, World Cup retirements/knockouts/upcoming
-    fixtures, and post-match reactions. Header, marker, and primary
+    Present/future football news only — manager sackings, manager
+    transfers/appointments, World Cup retirements/knockouts/upcoming
+    fixtures, confirmed ("deal done") transfers, in-progress player
+    transfers, and gossip/speculation. Header, marker, and primary
     hashtag adapt to item["category"] so each flavor reads distinctly
-    on the page instead of everything looking like a transfer post.
+    on the page.
 
-    `article_facts` (from article.fetch_and_extract_facts) adds a few
-    concrete bullet lines under the headline — fee, contract length,
-    one short quote — so the caption reads as a brief story instead
-    of just the headline again. Falls back to a generic one-line
-    framing sentence when no facts were found (fetch failed, no
-    matching facts in the article, or no link at all) — this must
-    never leave the caption looking broken just because a fetch
-    didn't work. The card IMAGE still shows the original headline
-    exactly as written (see graphics.render_photo_card call site in
-    bot.py) — only this caption text is reworded/expanded.
+    Uses the source feed's own <description>/shortDescription teaser
+    (item["description"]) for a short natural-language summary line
+    under the headline, instead of just repeating the headline. Falls
+    back to a generic one-line framing sentence when the feed gave no
+    usable teaser (missing, empty, or just a restatement of the
+    headline) — this must never leave the caption looking broken just
+    because a particular feed item had no description.
     """
-    category = item.get("category", "transfer")
+    category = item.get("category", "player_transfer")
     header, marker, primary_tag = _NEWS_CATEGORY_STYLE.get(
-        category, _NEWS_CATEGORY_STYLE["transfer"]
+        category, _NEWS_CATEGORY_STYLE["player_transfer"]
     )
-    headline = simplify_headline(_strip_urls(item["headline"]))
-    bullets = _facts_to_bullets(article_facts or {})
-    if bullets:
-        body = [headline, ""] + bullets
+    headline = simplify_headline(_strip_urls(item.get("headline") or item.get("title", "")))
+    desc = _clean_description(item.get("description", ""), headline)
+    if desc:
+        body = [headline, "", desc]
     else:
-        context = _STORY_CONTEXT.get(category, _STORY_CONTEXT["transfer"]).format(
+        context = _STORY_CONTEXT.get(category, _STORY_CONTEXT["player_transfer"]).format(
             league=item.get("league") or "football"
         )
         body = [headline, "", context]
@@ -714,19 +724,30 @@ def fmt_upcoming_fixtures(fixtures: list) -> str:
     return "\n".join(lines)
 
 
-def scorers_line(match: dict) -> str:
-    """Compact 'Player 27'   Player 61'' string of every goal in the
-    match, sorted by minute — for embedding directly on the full-time
-    scoreboard card image (graphics.render_scoreboard_card's
-    event_line param), separate from the fuller per-team breakdown
-    fmt_fulltime() uses in the post caption itself."""
+def scorers_line(match: dict, side: str | None = None) -> str:
+    """Compact 'Player 27'\\nPlayer 61'' string of goals in the match,
+    sorted by minute — for embedding directly on the scoreboard card
+    image (graphics.render_scoreboard_card's home_event_line/
+    away_event_line params), separate from the fuller per-team
+    breakdown fmt_fulltime() uses in the post caption itself.
+
+    `side` optionally filters to just "home" or "away" goals, so the
+    card can draw each team's scorers under that team's own crest
+    instead of one combined line down the center. Lines are newline-
+    joined (not space-joined) so multiple scorers on the same side
+    stack vertically under a narrower per-crest column."""
     def _sort_key(g: dict):
         try:
             return int(_minute(g["minute"]))
         except (TypeError, ValueError):
             return 0
-    goals = sorted(match.get("goals", []), key=_sort_key)
-    return "   ".join(f"{g['scorer']['name']} {_minute(g['minute'])}'" for g in goals)
+    goals = match.get("goals", [])
+    if side == "home":
+        goals = [g for g in goals if g["isHome"]]
+    elif side == "away":
+        goals = [g for g in goals if not g["isHome"]]
+    goals = sorted(goals, key=_sort_key)
+    return "\n".join(f"{g['scorer']['name']} {_minute(g['minute'])}'" for g in goals)
 
 
 def fmt_fulltime(match: dict) -> str:
