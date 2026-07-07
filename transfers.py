@@ -1,13 +1,14 @@
 """
 transfers.py — Breaking football news, immediate (present/future only)
 =========================================================================
-Covers everything happening right now, never the past:
-  - Transfers (signings, loan moves, deals agreed)
-  - Manager news (sackings, resignations, new appointments)
-  - World Cup news (retirements, knockouts/eliminations, upcoming
-    fixtures, qualification results)
-  - Post-match reactions (interviews, press conferences, reactions to
-    a result that just happened)
+Six tracked categories, each checked in this order (first match wins):
+  1. Manager sacking   — sackings, resignations, "parts ways"
+  2. Manager transfer  — new appointments, unveilings, interim bosses
+  3. World Cup news    — retirements, knockouts/eliminations, upcoming
+                          fixtures, qualification results
+  4. Deal done         — signings/moves that are CONFIRMED/official
+  5. Player transfer   — signings/loans/bids/contract talk in progress
+  6. Gossip            — speculation: linked with, interest, rumours
 
 Five free sources, combined and deduped, posted the moment something
 new is found — not tied to any filler clock:
@@ -26,9 +27,13 @@ _is_fresh() (config.TRANSFER_MAX_AGE_HOURS) before it's ever returned.
 This is what keeps the page "present going forward" — nothing here
 ever surfaces old news, regardless of dedup state.
 
-This module does NOT invent facts, scores, fees, or "reliability
-tiers" — a headline is a headline, taken and lightly categorized, never
-embellished.
+Every candidate also carries a "description" field (the RSS
+<description>/ESPN shortDescription — a short teaser sentence or two,
+distinct from the headline) so poster.fmt_football_news() can build a
+caption that reads as more than just the headline repeated. This
+module does NOT invent facts, scores, fees, or "reliability tiers" — a
+headline (and its feed-supplied teaser) is taken and lightly
+categorized, never embellished.
 """
 
 import re
@@ -143,27 +148,30 @@ def _is_fresh(published) -> bool:
 # in whichever is listed first.
 #
 # NOTE ON WHY THESE ARE REGEX, NOT LITERAL PHRASES:
-# The original version matched exact literal phrases ("signs",
-# "knocked out", "new contract"). Real headlines use every tense and
-# phrasing under the sun — "agreeing a deal to sign", "prefer to
-# join" (no "s"), "knock out" (present tense, not "knocked"), "extend
-# his contract" (not "new contract"). A literal-phrase list silently
-# drops almost everything that doesn't happen to use that exact
-# wording, which is why real days with plenty of transfer/World Cup
-# stories on the source sites were producing almost no matches. Each
-# pattern below uses \b word-stems with optional tense endings
-# (s|ed|ing) so "sign/signs/signing/signed" all match from one
-# pattern, same idea for join/agree/reject/extend/etc.
+# Real headlines use every tense and phrasing under the sun —
+# "agreeing a deal to sign", "prefer to join" (no "s"), "knock out"
+# (present tense, not "knocked"), "extend his contract" (not "new
+# contract"). Each pattern below uses \b word-stems with optional
+# tense endings (s|ed|ing) so "sign/signs/signing/signed" all match
+# from one pattern, same idea for join/agree/reject/extend/etc.
 # ══════════════════════════════════════════════════════════════════
 
-_MANAGER_PATTERNS = [
+_MANAGER_SACKING_PATTERNS = [
     r"\bsack(?:ed|s|ing)?\b", r"\bfired\b",
     r"\bstep(?:s|ped)?\s+down\b", r"\bresign(?:s|ed|ation)?\b",
     r"\bpart(?:s|ed)?\s+ways\b", r"\brelieved\s+of\b",
+    r"\bleaves?\s+(?:his|her|their)\s+(?:role|post)\b",
+    r"\bout\s+as\s+(?:manager|head\s+coach|boss)\b",
+    r"\bsacking\b",
+]
+
+_MANAGER_TRANSFER_PATTERNS = [
     r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?|hir(?:e|es|ed|ing))\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
     r"\bnew\s+(?:manager|head\s+coach|boss)\b",
     r"\btakes?\s+over\s+as\s+(?:manager|coach|boss)\b",
     r"\binterim\s+(?:manager|boss|coach)\b",
+    r"\bagrees?\s+to\s+become\b[^.]{0,25}\bmanager\b",
+    r"\bset\s+to\s+become\b[^.]{0,25}\b(?:manager|head\s+coach|boss)\b",
 ]
 
 _WORLDCUP_PATTERNS = [
@@ -181,72 +189,61 @@ _WORLDCUP_PATTERNS = [
     r"\blast\s+16\b",
 ]
 
-_INTERVIEW_PATTERNS = [
-    r"\breact(?:s|ed|ion)?\s+to\b", r"\bspeaks?\s+(?:after|to\s+media)\b",
-    r"\bpress\s+conference\b", r"\bon\s+the\s+(?:win|defeat|loss|draw)\b",
-    r"\bexclusive\s+interview\b", r"\bfull\s+interview\b",
-    r"\bresponds?\s+to\s+criticism\b",
-    # Direct player/manager quote headline: "Son Heung-min 'indescribably
-    # hurt' by South Korea World Cup exit" — a name (1-4 capitalized
-    # words) immediately followed by a quoted phrase is the actual
-    # person speaking, not a reporter's opinion. Explicitly excludes
-    # section labels ESPN/BBC use that also start with a capital word
-    # followed by a colon — "Listen:", "Papers:", "Watch:", "Report:" —
-    # which are radio-show listings / newspaper round-ups written BY
-    # reporters, not the player's own reaction. That was the bug: the
-    # previous version matched any "Word:" prefix, so those got miscast
-    # as player reactions while the real Son Heung-min quote (no colon,
-    # no "reacts to") was missed entirely.
-    r"^(?!(?:listen|watch|papers|paper|report|reports|reported|confirmed|exclusive|"
-    r"live|update|breaking|video|opinion|ranking|rankings|quiz|gallery|podcast)\b)"
-    r"[A-Z][\w\u00c0-\u017f'-]+(?:\s+[A-Z][\w\u00c0-\u017f'-]+){0,3}:?\s*['\u2018\u201c]",
+# "Deal done" — the transfer is CONFIRMED/complete, not just rumoured
+# or in progress. Checked before the general player-transfer bucket so
+# "Here we go! Player completes move to Club" lands here, not there.
+_DEAL_DONE_PATTERNS = [
+    r"\bhere\s+we\s+go\b",
+    r"\bdone\s+deal\b",
+    r"\bofficial(?:ly)?\b[^.]{0,20}\bsign(?:s|ed|ing)?\b",
+    r"\bconfirm(?:s|ed)?\s+(?:the\s+)?(?:signing|transfer|deal|move)\b",
+    r"\bcomplete(?:s|d)?\s+(?:a\s+|his\s+|her\s+)?(?:move|transfer|signing)\b",
+    r"\bunveil(?:s|ed|ing)?\s+(?:new\s+)?(?:signing|signings)\b",
+    r"\bmedical\s+(?:completed|done|passed)\b",
+    r"\bagree(?:s|d)?\s+(?:a\s+)?(?:permanent\s+)?deal\b",
+    r"\bjoins?\s+on\s+a\s+(?:permanent|free|loan)\b",
+    r"\bsigns?\s+(?:a\s+)?(?:\d+[- ]year\s+)?(?:deal|contract)\s+with\b",
 ]
 
-_TRACKER_PATTERNS = [
-    r"\btracker\b",   # "Messi tracker: Goals, assists, key moments in 2026"
-]
-
-_TRANSFER_PATTERNS = [
+# General player-transfer activity that's happening but not (yet)
+# confirmed as done, and isn't pure speculation either — bids, medicals
+# being arranged, contract-extension talk, "close to" a move.
+_PLAYER_TRANSFER_PATTERNS = [
     r"\bsign(?:s|ing|ed)?\b", r"\bjoin(?:s|ing|ed)?\b",
     r"\bmove(?:s|d)?\s+to\b", r"\bswitch(?:es|ed)?\s+to\b",
-    r"\bloan(?:ed)?\b", r"\bmedical\b", r"\bunveil(?:s|ed|ing)?\b",
+    r"\bloan(?:ed)?\b", r"\bmedical\b",
     r"\btransfer(?:s|red)?\b",
-    r"\bbid(?:s)?\b", r"\btarget(?:s|ed|ing)?\b", r"\blinked\s+with\b",
-    r"\ben?quiry\b", r"\breject(?:s|ed)?\b",
+    r"\bbid(?:s)?\b", r"\ben?quiry\b", r"\breject(?:s|ed)?\b",
     r"\b(?:extend|extends|extended|renew|renews|renewed)\b[^.]{0,25}\bcontract\b",
-    r"\bpersonal\s+terms\b", r"\bhere\s+we\s+go\b",
-    r"\brumou?rs?\b", r"\bgossip\b",
+    r"\bpersonal\s+terms\b",
     r"\bclose\s+to\s+(?:joining|signing|a\s+move|a\s+deal)\b",
-    r"\bagree(?:s|d)?\s+(?:a\s+)?(?:deal|fee|terms)\b",
-    r"\bcomplete(?:s|d)?\s+(?:a\s+)?(?:move|transfer|signing)\b",
-    r"\bconfirm(?:s|ed)?\s+(?:the\s+)?(?:signing|transfer|deal|move)\b",
     r"\bwant(?:s|ed)?\s+to\s+(?:sign|join)\b",
     r"\bprefer(?:s|red)?\s+to\s+join\b", r"\bset\s+to\s+join\b",
-    # Transfer speculation — "wants X in the PL", "backs move to work",
-    # "keen on", "monitoring", "eyeing" — the verb and the transfer noun
-    # (sign/join/deal/move/transfer) are often 5-15 words apart rather
-    # than adjacent, so this allows a wide gap between them instead of
-    # requiring the exact "want to sign" phrasing above.
-    r"\b(?:want(?:s|ed)?|keen|monitor(?:ing)?|admir(?:er|ing)?|ey(?:e|es|eing|ed)|track(?:ing)?|scout(?:ing)?)\b[^.]{0,100}\b(?:sign|join|deal|move|transfer)\b",
-    r"\binterest(?:ed)?\b",       # "Barcelona interest", "interested in" — almost always transfer speculation in a football feed
-    r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
-    # Plain retirement (not tied to a specific international tournament —
-    # that's covered separately by the World Cup patterns above it in
-    # the check order).
     r"\bannounces?\s+(?:his\s+|her\s+)?retirement\b", r"\bretires\b",
 ]
 
-# category -> (compiled patterns, graphics kind, display label)
-# Order matters: transfer/manager/worldcup are checked BEFORE interview
-# because interview's generic "Name: opinion" pattern would otherwise
-# swallow headlines like "Report: Arsenal complete signing of X" before
-# the transfer patterns ever get a chance to look at them.
+# Speculation only — nothing agreed, nothing confirmed. Checked last
+# within the transfer domain so it only catches what the more specific
+# buckets above didn't.
+_GOSSIP_PATTERNS = [
+    r"\brumou?rs?\b", r"\bgossip\b",
+    r"\blinked\s+with\b", r"\btarget(?:s|ed|ing)?\b",
+    r"\b(?:want(?:s|ed)?|keen|monitor(?:ing)?|admir(?:er|ing)?|ey(?:e|es|eing|ed)|track(?:ing)?|scout(?:ing)?)\b[^.]{0,100}\b(?:sign|join|deal|move|transfer)\b",
+    r"\binterest(?:ed)?\b",
+    r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
+]
+
+# category -> (compiled patterns, display label). Order matters:
+# manager sacking/transfer and World Cup are checked before
+# deal-done/player-transfer/gossip so a headline that could fit two
+# buckets lands in the more specific one.
 _CATEGORIES = (
-    ("manager",   [re.compile(p, re.I) for p in _MANAGER_PATTERNS],   "Manager News"),
-    ("worldcup",  [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],  "World Cup News"),
-    ("tracker",   [re.compile(p, re.I) for p in _TRACKER_PATTERNS],   "Player Tracker"),
-    ("transfer",  [re.compile(p, re.I) for p in _TRANSFER_PATTERNS],  "Transfer News"),
-    ("interview", [re.compile(p, re.I) for p in _INTERVIEW_PATTERNS], "Post-Match Reaction"),
+    ("manager_sacking",  [re.compile(p, re.I) for p in _MANAGER_SACKING_PATTERNS],  "Manager Sacking"),
+    ("manager_transfer", [re.compile(p, re.I) for p in _MANAGER_TRANSFER_PATTERNS], "Manager Transfer News"),
+    ("worldcup",         [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],         "World Cup News"),
+    ("deal_done",        [re.compile(p, re.I) for p in _DEAL_DONE_PATTERNS],        "Deal Done"),
+    ("player_transfer",  [re.compile(p, re.I) for p in _PLAYER_TRANSFER_PATTERNS],  "Player Transfer News"),
+    ("gossip",           [re.compile(p, re.I) for p in _GOSSIP_PATTERNS],           "Gossip"),
 )
 
 # Rolling sample of headlines that matched NO category this poll, so a
@@ -254,7 +251,6 @@ _CATEGORIES = (
 # small so logs don't flood. Cleared at the top of every check_new().
 _UNMATCHED_SAMPLE_CAP = 8
 _unmatched_sample: list = []
-
 
 
 def _classify_headline(headline: str, source: str = "") -> tuple:
@@ -346,10 +342,13 @@ def _guardian_image(item) -> str:
 
 def _get_rss(url: str, timeout: int = 10, image_fn=_rss_image) -> list[dict]:
     """Minimal RSS 2.0 parser via stdlib — returns
-    [{title, link, image}, ...]. `image` is "" when the feed doesn't
-    carry one for that item. `image_fn` lets a specific feed (e.g.
-    Guardian) supply its own image-selection logic; defaults to the
-    generic thumbnail/content/enclosure lookup used by BBC/Sky."""
+    [{title, link, image, description, published}, ...]. `description`
+    is the feed's own <description> teaser text (raw, may contain HTML
+    — poster.py strips/cleans it before it goes in a caption), "" when
+    the feed doesn't carry one for that item. `image_fn` lets a
+    specific feed (e.g. Guardian) supply its own image-selection logic;
+    defaults to the generic thumbnail/content/enclosure lookup used by
+    BBC/Sky."""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code != 200:
@@ -363,6 +362,7 @@ def _get_rss(url: str, timeout: int = 10, image_fn=_rss_image) -> list[dict]:
             if title:
                 items.append({
                     "title": title, "link": link, "image": image_fn(item),
+                    "description": (item.findtext("description") or "").strip(),
                     "published": _parse_rss_date(item.findtext("pubDate")),
                 })
         return items
@@ -422,6 +422,7 @@ def _espn_candidates() -> list[dict]:
                 "league":    league_name,
                 "link":      (article.get("links", {}).get("web", {}) or {}).get("href", ""),
                 "image":     _espn_article_image(article),
+                "description": article.get("description") or article.get("shortDescription") or "",
                 "published": _parse_iso(article.get("published") or article.get("lastModified")),
                 "source":    "ESPN",
             })
@@ -444,6 +445,7 @@ def _bbc_candidates() -> list[dict]:
             "league":   _guess_league(entry["title"]),
             "link":     entry["link"],
             "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
             "published": entry.get("published"),
             "source":   "BBC Sport",
         })
@@ -460,6 +462,7 @@ def _sky_candidates() -> list[dict]:
         # Mixed feed (darts/cricket/F1/etc.) — keep football only
         if "/football/" not in link:
             continue
+        raw_football += 1
         category, label = _classify_headline(entry["title"], "Sky")
         if not category:
             continue
@@ -471,6 +474,7 @@ def _sky_candidates() -> list[dict]:
             "league":   _guess_league(entry["title"]),
             "link":     link,
             "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
             "published": entry.get("published"),
             "source":   "Sky Sports",
         })
@@ -497,6 +501,7 @@ def _guardian_candidates() -> list[dict]:
             "league":   _guess_league(entry["title"]),
             "link":     entry["link"],
             "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
             "published": entry.get("published"),
             "source":   "The Guardian",
         })
@@ -521,6 +526,7 @@ def _90min_candidates() -> list[dict]:
             "league":   _guess_league(entry["title"]),
             "link":     entry["link"],
             "image":    entry.get("image", ""),
+            "description": entry.get("description", ""),
             "published": entry.get("published"),
             "source":   "90min",
         })
@@ -530,12 +536,13 @@ def _90min_candidates() -> list[dict]:
 
 def check_new(already_seen: set) -> list[dict]:
     """
-    Polls all three sources, returns news items (transfers, manager
-    news, World Cup news, post-match reactions) not present in
-    `already_seen` (caller marks them seen after successfully
-    posting). Combined and deduped by key across sources. Anything
-    older than config.TRANSFER_MAX_AGE_HOURS is dropped regardless of
-    dedup state — this module never surfaces the past.
+    Polls all five sources, returns news items (manager sackings,
+    manager transfers, World Cup news, deal-done, player transfers,
+    gossip) not present in `already_seen` (caller marks them seen
+    after successfully posting). Combined and deduped by key across
+    sources. Anything older than config.TRANSFER_MAX_AGE_HOURS is
+    dropped regardless of dedup state — this module never surfaces
+    the past.
     """
     candidates = []
     per_source_counts = {}
@@ -578,5 +585,5 @@ def check_new(already_seen: set) -> list[dict]:
     if _unmatched_sample:
         print(f"[NEWS] sample of headlines that matched NO category this poll "
               f"(widen the patterns if these look like real transfer/manager/"
-              f"World Cup/reaction stories): {_unmatched_sample}")
+              f"World Cup/gossip stories): {_unmatched_sample}")
     return new_items
