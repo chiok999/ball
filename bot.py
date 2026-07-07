@@ -2,11 +2,13 @@
 bot.py — Match Corna Live main bot
 ==================================
 Events posted:
-  1. 📋 Lineup confirmed (ESPN does not provide this — field is always empty)
+  1. 📋 Lineup confirmed (~LINEUP_LEAD_MINUTES before kickoff)
   2. 📌 Kick-off
   3. ⚽ Goal (with score, scorer, and assist when available)
-  4. ⏱️  Extra time start
-  5. 🏁  Full time (includes AET / penalty result)
+  4. 🟥 Red card
+  5. ⏸️  Half time (current score + scorers/assists)
+  6. ⏱️  Extra time start
+  7. 🏁  Full time (includes AET / penalty result)
 """
 
 import json
@@ -21,9 +23,7 @@ import scraper
 import poster
 import transfers
 import worldcup
-import elo
 import graphics
-import article
 
 # ══════════════════════════════════════════════════════════════════
 # RAILWAY KEEP-ALIVE SERVER
@@ -64,7 +64,6 @@ _last_post_time:    float            = 0.0   # for MIN_POST_GAP enforcement
 
 # World Cup filler cadence — any real match event resets this clock.
 _last_event_post_time: float = 0.0
-_filler_rotation_idx:  int   = 0
 
 
 def _load_state():
@@ -134,19 +133,20 @@ def _rate_limit_ok() -> bool:
 
 
 def _transfer_rate_limit_ok() -> bool:
-    """Separate, tighter cap just for breaking transfer news. A deadline-day
+    """Separate, tighter cap just for breaking football news. A deadline-day
     burst of headlines across several leagues can pass MAX_POSTS_PER_HOUR
-    easily while still looking spammy on its own — this keeps transfer
+    easily while still looking spammy on its own — this keeps news
     posts specifically to config.TRANSFER_MAX_POSTS_PER_WINDOW per
-    config.TRANSFER_WINDOW_MINUTES, independent of everything else the
-    bot posts (goals, kickoffs, etc. are unaffected)."""
+    config.TRANSFER_WINDOW_MINUTES (default: 1 per 30 minutes),
+    independent of everything else the bot posts (goals, kickoffs, etc.
+    are unaffected)."""
     global _transfer_post_timestamps
     now = time.time()
     # getattr with defaults: if config.py on the deployed environment is
     # older than bot.py (e.g. only one of the two files got redeployed),
     # this must never crash the poll loop — just fall back to the safe
-    # default (2 per 30 min) instead of raising AttributeError.
-    max_posts = getattr(config, "TRANSFER_MAX_POSTS_PER_WINDOW", 2)
+    # default instead of raising AttributeError.
+    max_posts = getattr(config, "TRANSFER_MAX_POSTS_PER_WINDOW", 1)
     window_min = getattr(config, "TRANSFER_WINDOW_MINUTES", 30)
     window_ago = now - window_min * 60
     _transfer_post_timestamps = [t for t in _transfer_post_timestamps if t > window_ago]
@@ -182,7 +182,7 @@ def _post_if_new(key: str, message: str, image_path: str | None = None) -> bool:
 
 def _post_now(message: str, image_path: str | None = None) -> bool:
     """For content with no natural dedup key (filler posts) — still
-    respects rate limiting and resets the same 30-min content clock."""
+    respects rate limiting and resets the same content clock."""
     global _post_timestamps, _last_post_time, _last_event_post_time
     if not message:
         return False
@@ -221,6 +221,19 @@ def _safe_image(builder, *args, **kwargs) -> str | None:
         return None
 
 
+def _minutes_until_kickoff(match: dict) -> float | None:
+    """Minutes remaining until kickoff, or None if utcDate is missing/
+    unparseable. Negative once the match has actually kicked off."""
+    utc_str = match.get("utcDate", "")
+    if not utc_str:
+        return None
+    try:
+        ko = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+        return (ko - datetime.now(timezone.utc)).total_seconds() / 60
+    except Exception:
+        return None
+
+
 # ══════════════════════════════════════════════════════════════════
 # EVENT KEYS
 # ══════════════════════════════════════════════════════════════════
@@ -232,15 +245,16 @@ def _key_goal(mid: str, g: dict, idx: int = 0) -> str:
     if minute in ("?", "", "0"):
         minute = f"idx{idx}"
     return f"goal:{mid}:{g['scorer']['name']}:{minute}"
+def _key_redcard(mid: str, b: dict)     -> str:
+    return f"redcard:{mid}:{b.get('player', {}).get('name', '?')}:{b.get('minute', '?')}"
+def _key_halftime(mid: str)             -> str: return f"halftime:{mid}"
 def _key_extratime(mid: str)            -> str: return f"extratime:{mid}"
 def _key_fulltime(mid: str)             -> str: return f"ft:{mid}"
-def _key_elo_update(mid: str)           -> str: return f"elo_updated:{mid}"
-def _key_winprob(mid: str)              -> str: return f"winprob:{mid}"
 def _key_var(mid: str, v: dict)         -> str: return f"var:{mid}:{v.get('minute','?')}:{v.get('player','?')}"
 
 
 # ══════════════════════════════════════════════════════════════════
-# WORLD CUP FILLER CONTENT (5am–11pm, at least every 30 min)
+# WORLD CUP FILLER CONTENT (5am–11pm, at least every FILLER_GAP_MINUTES)
 # ══════════════════════════════════════════════════════════════════
 
 def maybe_post_filler(matches: list):
@@ -248,10 +262,8 @@ def maybe_post_filler(matches: list):
     Real match events always post immediately and reset the clock
     (via _post_if_new). This only fires when nothing has posted in the
     last FILLER_GAP_MINUTES, inside the FILLER_START_HOUR–FILLER_END_HOUR
-    window, rotating between top scorers and win probability.
+    window, posting World Cup top scorers.
     """
-    global _filler_rotation_idx
-
     if not config.WORLD_CUP_MODE:
         return
 
@@ -263,81 +275,33 @@ def maybe_post_filler(matches: list):
     if elapsed_min < config.FILLER_GAP_MINUTES:
         return
 
-    rotation = ["top_scorers", "win_probability"]
-    kind = rotation[_filler_rotation_idx % len(rotation)]
-    _filler_rotation_idx += 1
+    scorers = worldcup.get_top_scorers(config.WORLD_CUP_SLUG)
+    if scorers:
+        print("[FILLER] 👟 Posting World Cup top scorers")
+        lines = [f"{s['rank']}. {s['player']} - {s['goals']}" for s in scorers[:5]]
+        img = _safe_image(graphics.render_card, "stats", "🚩", "World Cup Top Scorers", lines)
+        if _post_now(poster.fmt_top_scorers(scorers), image_path=img):
+            return
 
-    if kind == "top_scorers" and config.WORLD_CUP_MODE:
-        scorers = worldcup.get_top_scorers(config.WORLD_CUP_SLUG)
-        if scorers:
-            print("[FILLER] 👟 Posting World Cup top scorers")
-            lines = [f"{s['rank']}. {s['player']} - {s['goals']}" for s in scorers[:5]]
-            img = _safe_image(graphics.render_card, "stats", "🚩", "World Cup Top Scorers", lines)
-            if _post_now(poster.fmt_top_scorers(scorers), image_path=img):
-                return
-        # fall through to win-probability if top scorers unavailable this cycle
-
-    if config.POST_WIN_PROBABILITY:
-        upcoming = [
-            m for m in matches
-            if m.get("_is_world_cup") and m["status"] == "SCHEDULED"
-        ]
-        upcoming.sort(key=lambda m: m.get("utcDate", ""))
-        if upcoming:
-            m = upcoming[0]
-            # Every match needs a stable id for the dedup key below —
-            # sofascore.py/scraper.py normalize matches with an "id"
-            # field, but fall back to a name+kickoff-time composite so
-            # this never crashes if a source is ever missing it.
-            mid = m.get("id") or f"{m['homeTeam']['name']}_{m['awayTeam']['name']}_{m.get('utcDate', '')}"
-            if _already_posted(_key_winprob(mid)):
-                # Already posted the probability for this exact fixture —
-                # this was the bug: the old code used _post_now() with no
-                # dedup key at all, so the SAME upcoming match (still the
-                # earliest scheduled one until it kicks off) got reposted
-                # every single filler cycle. Skip it and fall through so
-                # a quiet cycle doesn't post nothing at all.
-                print(f"[FILLER] ⏭️  Win probability already posted for {m['homeTeam']['name']} vs {m['awayTeam']['name']} — skipping repeat")
-            else:
-                probs = elo.win_probability(
-                    m["homeTeam"]["name"], m["awayTeam"]["name"],
-                    home_advantage=config.ELO_HOME_ADVANTAGE,
-                )
-                if probs:
-                    print(f"[FILLER] 🔮 Posting win probability: {m['homeTeam']['name']} vs {m['awayTeam']['name']}")
-                    lines = [
-                        f"{m['homeTeam']['name']} - {probs['home']}%",
-                        f"Draw - {probs['draw']}%",
-                        f"{m['awayTeam']['name']} - {probs['away']}%",
-                    ]
-                    img = _safe_image(
-                        graphics.render_card, "stats", "🚩",
-                        f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}", lines,
-                    )
-                    if _post_if_new(_key_winprob(mid), poster.fmt_win_probability(m, probs), image_path=img):
-                        return
-                else:
-                    print("[FILLER] ⚠️  Win probability unavailable this cycle (ClubElo unreachable or team ratings unresolved)")
-        else:
-            print("[FILLER] ⚠️  No upcoming World Cup fixture to show win probability for")
-
-    print("[FILLER] ⚠️  Nothing posted this cycle — both top scorers and win probability unavailable")
+    print("[FILLER] ⚠️  Nothing posted this cycle — top scorers unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════
-# FOOTBALL NEWS — transfers, manager news, World Cup news, post-match
-# reactions. Immediate, not tied to the filler clock. Present/future
-# only — transfers.py enforces freshness, this never replays old news.
+# FOOTBALL NEWS — player transfers, manager sackings/transfers, deal
+# done, gossip, World Cup news. Immediate, not tied to the filler
+# clock. Present/future only — transfers.py enforces freshness, this
+# never replays old news.
 # ══════════════════════════════════════════════════════════════════
 
-# kind -> graphics.py card "kind" (badge color/label). Falls back to
+# category -> graphics.py card "kind" (badge color/label). Falls back to
 # "transfer" styling for any category not listed here.
 _NEWS_CARD_KIND = {
-    "transfer":  "transfer",
-    "manager":   "manager",
-    "worldcup":  "worldcup",
-    "interview": "interview",
-    "tracker":   "stats",
+    "player_transfer":  "transfer",
+    "manager_sacking":  "manager_sacking",
+    "manager_transfer": "manager",
+    "deal_done":        "deal_done",
+    "gossip":           "gossip",
+    "worldcup":         "worldcup",
 }
 
 
@@ -360,29 +324,16 @@ def maybe_post_transfer_news(tick: int):
         img = None
         # Prefer the real article photo (people want to see the player
         # or manager, not a solid-color text card) — falls back
-        # automatically to the generated card if the source had no
-        # image or it failed to download/decode.
+        # automatically to a vertically-centered headline card if the
+        # source had no image or it failed to download/decode.
         if item.get("image"):
             img = _safe_image(
                 graphics.render_photo_card, card_kind, item["headline"],
                 item["image"], source=item.get("source"),
             )
         if not img:
-            img = _safe_image(graphics.render_card, card_kind, "", label.upper(), [item["headline"]])
-        # Fetch the linked article and pull out a few concrete facts
-        # (fee, contract length, one short quote) so the caption is a
-        # brief story instead of just the headline again — see
-        # article.py for why this extracts facts rather than
-        # rewriting the article's prose. Only done here (post time,
-        # after the rate-limit check above), not during
-        # transfers.check_new(), so items held back by the cap this
-        # cycle never cost a wasted fetch.
-        try:
-            facts = article.fetch_and_extract_facts(item.get("link", ""))
-        except Exception as e:
-            print(f"[NEWS] ⚠️  Article fetch/extract failed, posting without extra facts: {e}")
-            facts = {}
-        if _post_if_new(item["key"], poster.fmt_football_news(item, article_facts=facts), image_path=img):
+            img = _safe_image(graphics.render_headline_card, card_kind, item["headline"], source=item.get("source"))
+        if _post_if_new(item["key"], poster.fmt_football_news(item), image_path=img):
             _transfer_post_timestamps.append(time.time())
         time.sleep(2)
 
@@ -417,17 +368,24 @@ def process_match(match: dict):
     hname  = match["homeTeam"]["name"]
     aname  = match["awayTeam"]["name"]
     # ── Lineups ───────────────────────────────────────────────────
-    # Fixed: lineups now come from ESPN's /summary endpoint (scoreboard
-    # never had them). Fetched once, close to kickoff, per match.
+    # Fetched from ESPN's /summary endpoint, gated to fire only once a
+    # match is within config.LINEUP_LEAD_MINUTES of kickoff (real-world
+    # availability is ~60 min pre-kickoff) — this is what makes lineups
+    # post "~1hr before kickoff for every game" instead of being
+    # attempted (and failing) the moment a fixture is first seen hours
+    # earlier. Still retried every tick inside the window until either
+    # lineups are found or the match kicks off.
     if (config.POST_LINEUPS
             and status == "SCHEDULED"
             and match.get("_league_slug")
             and not _already_posted(_key_lineup(mid))):
-        lineups = scraper.get_lineup(match["_league_slug"], match.get("_raw_id", mid))
-        if lineups:
-            match = {**match, "lineups": lineups}
-            print(f"[BOT] 📋 Lineups: {hname} vs {aname}")
-            _post_if_new(_key_lineup(mid), poster.fmt_lineup(match))
+        mins_to_ko = _minutes_until_kickoff(match)
+        if mins_to_ko is not None and mins_to_ko <= config.LINEUP_LEAD_MINUTES:
+            lineups = scraper.get_lineup(match["_league_slug"], match.get("_raw_id", mid))
+            if lineups:
+                match = {**match, "lineups": lineups}
+                print(f"[BOT] 📋 Lineups: {hname} vs {aname}")
+                _post_if_new(_key_lineup(mid), poster.fmt_lineup(match))
 
     # ── VAR / disallowed goals ───────────────────────────────────────
     if config.POST_VAR_DISALLOWED:
@@ -468,16 +426,58 @@ def process_match(match: dict):
                 h_sc, a_sc = _current_goal_score(match, goal)
                 event_line = f"{scorer} {poster._minute(goal['minute'])}'"
                 if assist:
-                    event_line += f" (assist: {assist})"
+                    event_line += f"\n(assist: {assist})"
+                # Scorer/assist text is drawn under the SCORING team's
+                # own crest, not centered across the card — makes it
+                # immediately clear whose goal this is at a glance.
+                side_kwargs = {"home_event_line": event_line} if goal["isHome"] else {"away_event_line": event_line}
                 img = _safe_image(
                     graphics.render_scoreboard_card, "goal", hname, aname, h_sc, a_sc,
                     competition=match.get("_comp_name", ""),
-                    event_line=event_line,
-                    status_label=f"{poster._minute(goal['minute'])}' \u2022 LIVE", show_pulse=True,
+                    status_label=f"{poster._minute(goal['minute'])}' - LIVE", show_pulse=True,
                     home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
+                    **side_kwargs,
                 )
                 _post_if_new(key, poster.fmt_goal(match, goal), image_path=img)
                 time.sleep(2)
+
+    # ── Red cards ─────────────────────────────────────────────────
+    if config.POST_RED_CARDS and status in ("IN_PLAY", "PAUSED", "EXTRA_TIME", "SHOOTOUT", "FINISHED"):
+        for booking in match.get("bookings", []):
+            if booking.get("card") != "RED_CARD":
+                continue
+            key = _key_redcard(mid, booking)
+            if _already_posted(key):
+                continue
+            player = booking.get("player", {}).get("name", "Unknown")
+            minute = poster._minute(booking.get("minute", "?"))
+            print(f"[BOT] 🟥 Red card: {player} {minute}' — {hname} vs {aname}")
+            h_sc, a_sc = match["score"]["fullTime"].get("home", 0), match["score"]["fullTime"].get("away", 0)
+            event_line = f"{player} {minute}'"
+            side_kwargs = {"home_event_line": event_line} if booking.get("isHome") else {"away_event_line": event_line}
+            img = _safe_image(
+                graphics.render_scoreboard_card, "redcard", hname, aname, h_sc or 0, a_sc or 0,
+                competition=match.get("_comp_name", ""),
+                status_label=f"{minute}' - RED CARD", show_pulse=True,
+                home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
+                **side_kwargs,
+            )
+            _post_if_new(key, poster.fmt_redcard(match, booking), image_path=img)
+            time.sleep(2)
+
+    # ── Half time (current score + scorers/assists) ────────────────
+    if config.POST_HALFTIME and status == "PAUSED" and not _already_posted(_key_halftime(mid)):
+        print(f"[BOT] ⏸️  Half time: {hname} vs {aname}")
+        h_sc, a_sc = match["score"]["fullTime"].get("home", 0), match["score"]["fullTime"].get("away", 0)
+        img = _safe_image(
+            graphics.render_scoreboard_card, "halftime", hname, aname, h_sc or 0, a_sc or 0,
+            competition=match.get("_comp_name", ""),
+            status_label="HALF TIME", show_pulse=False,
+            home_event_line=poster.scorers_line(match, side="home"),
+            away_event_line=poster.scorers_line(match, side="away"),
+            home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
+        )
+        _post_if_new(_key_halftime(mid), poster.fmt_halftime(match), image_path=img)
 
     # ── Extra time ────────────────────────────────────────────────
     if status in ("EXTRA_TIME", "SHOOTOUT") or (
@@ -487,11 +487,6 @@ def process_match(match: dict):
             _post_if_new(_key_extratime(mid), poster.fmt_extratime(match))
 
     # ── Full time ─────────────────────────────────────────────────
-    if status == "FINISHED" and not _already_posted(_key_elo_update(mid)):
-        h_sc, a_sc = match["score"]["fullTime"].get("home"), match["score"]["fullTime"].get("away")
-        elo.record_result(hname, aname, h_sc, a_sc, home_advantage=config.ELO_HOME_ADVANTAGE)
-        _mark_posted(_key_elo_update(mid))
-
     if config.POST_FULLTIME and status == "FINISHED" and not _already_posted(_key_fulltime(mid)):
         if match.get("_went_to_penalties"):
             print(f"[BOT] 🏁 Full time (penalties): {hname} vs {aname}")
@@ -502,14 +497,17 @@ def process_match(match: dict):
         h_sc, a_sc = match["score"]["fullTime"].get("home", 0), match["score"]["fullTime"].get("away", 0)
         status_label = "FULL TIME"
         if match.get("_went_to_penalties"):
-            status_label = "FULL TIME \u2022 PENALTIES"
+            status_label = "FULL TIME - PENALTIES"
         elif match.get("_went_to_et"):
-            status_label = "FULL TIME \u2022 AET"
+            status_label = "FULL TIME - AET"
         img = _safe_image(
             graphics.render_scoreboard_card, "fulltime", hname, aname, h_sc or 0, a_sc or 0,
             competition=match.get("_comp_name", ""),
             status_label=status_label, show_pulse=False,
-            event_line=poster.scorers_line(match),
+            # Each team's scorers sit under their own crest instead of
+            # one combined line down the center of the card.
+            home_event_line=poster.scorers_line(match, side="home"),
+            away_event_line=poster.scorers_line(match, side="away"),
             home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
         )
         _post_if_new(_key_fulltime(mid), poster.fmt_fulltime(match), image_path=img)
@@ -530,12 +528,20 @@ def _seed_finished(matches: list):
             _key_kickoff(mid),
             _key_lineup(mid),
             _key_extratime(mid),
+            _key_halftime(mid),
         ):
             if key not in _events:
                 _events[key] = time.time()
                 seeded += 1
         for idx, g in enumerate(m.get("goals", [])):
             k = _key_goal(mid, g, idx)
+            if k not in _events:
+                _events[k] = time.time()
+                seeded += 1
+        for b in m.get("bookings", []):
+            if b.get("card") != "RED_CARD":
+                continue
+            k = _key_redcard(mid, b)
             if k not in _events:
                 _events[k] = time.time()
                 seeded += 1
@@ -553,11 +559,11 @@ def main():
     _load_state()
     # Resuming the filler clock from persisted state, not from "now":
     # blindly stamping time.time() here meant every restart re-armed the
-    # 30-min WORLD_CUP_MODE filler wait from zero, regardless of how long
-    # the page had actually been quiet — on a debugging session with
-    # frequent redeploys this meant filler basically never got a chance
-    # to fire. _events[key] is set to time.time() on every real post
-    # (via _mark_posted) and during startup seeding, so the most recent
+    # filler wait from zero, regardless of how long the page had
+    # actually been quiet — on a debugging session with frequent
+    # redeploys this meant filler basically never got a chance to fire.
+    # _events[key] is set to time.time() on every real post (via
+    # _mark_posted) and during startup seeding, so the most recent
     # value in there is a true "time since last real thing happened,"
     # surviving restarts. Empty state (first-ever boot) falls back to
     # 0.0, which makes filler eligible on the very first tick.
@@ -571,17 +577,19 @@ def main():
     print("  Match Corna Live Bot — Running")
     print(f"  Poll interval : {config.POLL_INTERVAL}s")
     print(f"  Data source   : {config.PRIMARY_SOURCE} primary, {config.FALLBACK_SOURCE} fallback")
-    print(f"  Lineups       : {config.POST_LINEUPS} (via ESPN /summary, fetched near kickoff)")
+    print(f"  Lineups       : {config.POST_LINEUPS} (via ESPN /summary, ~{config.LINEUP_LEAD_MINUTES}min pre-kickoff)")
     print(f"  Kick-off      : {config.POST_KICKOFF}")
     print(f"  Goals         : {config.POST_GOALS} (assists included when the source provides one)")
+    print(f"  Red cards     : {config.POST_RED_CARDS}")
+    print(f"  Half time     : {config.POST_HALFTIME}")
     print(f"  VAR/No Goal   : {config.POST_VAR_DISALLOWED} (best-effort — verify against a live match)")
     print(f"  Extra time    : True")
     print(f"  Full time     : {config.POST_FULLTIME}")
     print(f"  Preview       : {config.POST_DAILY_PREVIEW} @ {config.DAILY_PREVIEW_HOUR}:00 UTC")
     print(f"  World Cup mode: {config.WORLD_CUP_MODE} (filler every {config.FILLER_GAP_MINUTES}min, {config.FILLER_START_HOUR}:00-{config.FILLER_END_HOUR}:00 UTC)")
-    print(f"  Football news : {config.POST_TRANSFER_NEWS} — transfers, managers, World Cup, reactions "
-          f"({', '.join(config.TRANSFER_LEAGUES.values())}, World Cup)")
-    print(f"  Win probability: {config.POST_WIN_PROBABILITY} (ClubElo)")
+    print(f"  Football news : {config.POST_TRANSFER_NEWS} — player transfers, manager sackings/transfers, "
+          f"deal-done, gossip, World Cup news ({', '.join(config.TRANSFER_LEAGUES.values())}, World Cup) "
+          f"— max {config.TRANSFER_MAX_POSTS_PER_WINDOW} per {config.TRANSFER_WINDOW_MINUTES}min")
     print(f"  FB Page ID    : {'SET ✅' if config.FB_PAGE_ID else 'NOT SET — dev mode'}")
     print("=" * 60)
 
