@@ -70,12 +70,16 @@ ACCENTS = {
     "default":  "#14532D",  # pitch green
     "goal":     "#14532D",
     "kickoff":  "#166534",
+    "halftime": "#1E3A5F",  # deep blue — same family as full-time
+    "redcard":  "#7A1F1F",  # red — same family as VAR
     "fulltime": "#1E3A5F",  # deep blue
     "var":      "#7A1F1F",  # red
-    "transfer": "#7C2D12",  # burnt orange/red — matches breaking-news urgency
-    "manager":  "#0C4A6E",  # deep sky blue — distinct from transfer red
+    "transfer": "#7C2D12",  # burnt orange/red — matches breaking-news urgency (player transfer)
+    "manager":  "#0C4A6E",  # deep sky blue — manager transfer/appointment
+    "manager_sacking": "#7A1F1F",  # red — a sacking reads as more urgent/negative than an appointment
+    "deal_done": "#166534",  # green — confirmed/positive
+    "gossip":   "#581C87",  # purple — clearly "speculative", distinct from confirmed news
     "worldcup": "#065F46",  # emerald — ties to World Cup branding
-    "interview": "#4C1D95", # violet — distinct "reaction" feel
     "stats":    "#312E81",  # indigo (World Cup filler cards)
 }
 
@@ -84,12 +88,16 @@ BADGES = {
     "default":  ("MATCH UPDATE",     "#14532D"),
     "goal":     ("GOAL",             "#B45309"),
     "kickoff":  ("KICK-OFF",         "#15803D"),
+    "halftime": ("HALF TIME",        "#1E3A5F"),
+    "redcard":  ("RED CARD",         "#7A1F1F"),
     "fulltime": ("FULL TIME",        "#1E3A5F"),
     "var":      ("VAR REVIEW",       "#7A1F1F"),
-    "transfer": ("BREAKING NEWS",    "#C2410C"),
+    "transfer": ("TRANSFER NEWS",    "#C2410C"),
     "manager":  ("MANAGER NEWS",     "#0369A1"),
+    "manager_sacking": ("MANAGER SACKING", "#DC2626"),
+    "deal_done": ("DEAL DONE",       "#16A34A"),
+    "gossip":   ("GOSSIP",           "#7C3AED"),
     "worldcup": ("WORLD CUP",        "#059669"),
-    "interview": ("REACTION",        "#6D28D9"),
     "stats":    ("STATS",            "#4338CA"),
 }
 
@@ -398,6 +406,47 @@ def render_card(kind: str, marker: str, title: str, lines: list, source: str = N
     return _save(img)
 
 
+def render_headline_card(kind: str, headline: str, source: str | None = None) -> str:
+    """
+    Text-only fallback used when a news item has no usable real photo
+    (render_photo_card returned None). Unlike render_card — which
+    top-anchors content right under the badge, sized for multi-line
+    stat/VAR lists — this is built for exactly one thing (a headline),
+    so it vertically (and horizontally) centers that headline in the
+    space between the badge and the footer ribbon. Top-anchoring a
+    single short headline here left a large empty gap at the bottom of
+    the card, which read as a broken/unfinished layout rather than an
+    intentional design.
+    """
+    img, draw = _base_canvas(kind)
+    W, H = CARD_SIZE
+    badge_text, accent = BADGES.get(kind, BADGES["default"])
+    badge_bottom = _draw_badge_pill(draw, badge_text, accent)
+
+    footer_h = 84  # matches _draw_brand_ribbon's ribbon_h
+    top_bound = badge_bottom + 40
+    bottom_bound = H - footer_h - 40
+
+    title_font = _font(56)
+    lines = textwrap.wrap(headline, width=22)[:6]
+    line_h = 68
+    block_h = line_h * len(lines)
+
+    y = top_bound + max(0, (bottom_bound - top_bound - block_h) / 2)
+    for line in lines:
+        lw = _text_w(draw, line, title_font)
+        _shadow_text(draw, (W / 2 - lw / 2, y), line, title_font, fill=WHITE)
+        y += line_h
+
+    if source:
+        src_text = f"Source: {source}"
+        sw = _text_w(draw, src_text, _font(26))
+        draw.text((W / 2 - sw / 2, bottom_bound - 6), src_text, font=_font(26), fill="#D1D5DB")
+
+    _draw_brand_ribbon(img, draw)
+    return _save(img)
+
+
 # ══════════════════════════════════════════════════════════════════
 # SCORE CARD — kickoff / goal / fulltime, with crest logos (or
 # initials-avatar fallback so a missing crest never leaves a gap)
@@ -611,12 +660,13 @@ SCOREBOARD_ACCENTS = {
     "default":   "#3FD3E8",
     "kickoff":   "#3FD3E8",   # bright cyan
     "goal":      "#FFC93C",   # bright gold
+    "halftime":  "#3FD3E8",
+    "redcard":   "#FF5C5C",   # bright red
     "fulltime":  "#3FD3E8",
     "var":       "#FF5C5C",   # bright red
     "transfer":  "#FF8A3D",   # bright orange
     "manager":   "#3FD3E8",
     "worldcup":  "#3FD3E8",
-    "interview": "#C084FC",
     "stats":     "#818CF8",
 }
 
@@ -624,6 +674,8 @@ SCOREBOARD_HEADERS = {
     "default":  ("MATCH UPDATE", ""),
     "kickoff":  ("MATCH UPDATE", "KICK-OFF"),
     "goal":     ("MATCH UPDATE", "GOAL"),
+    "halftime": ("MATCH UPDATE", "HALF TIME"),
+    "redcard":  ("MATCH UPDATE", "RED CARD"),
     "fulltime": ("MATCH RESULT", "FULL TIME"),
     "var":      ("MATCH UPDATE", "VAR REVIEW"),
 }
@@ -678,6 +730,7 @@ def _draw_score_hexagon(img, draw, cx: float, cy: float, home_score, away_score,
 def render_scoreboard_card(kind: str, home_name: str, away_name: str,
                             home_score, away_score, competition: str = "",
                             event_line: str = "", status_label: str = "",
+                            home_event_line: str = "", away_event_line: str = "",
                             home_crest_url: str = "", away_crest_url: str = "",
                             show_pulse: bool = False) -> str:
     """
@@ -688,6 +741,13 @@ def render_scoreboard_card(kind: str, home_name: str, away_name: str,
     team crest + score hexagon + team crest in a row, team names under
     the crests, optional event line (goal scorer/minute) below, brand
     footer at the bottom.
+
+    Scorer/assist placement: pass `home_event_line`/`away_event_line`
+    (not the generic `event_line`) whenever the event belongs to one
+    specific team — a goal, a full-time scorer list, a red card — so
+    the name is drawn under THAT team's crest instead of spanning the
+    center of the card. `event_line` still exists for content with no
+    natural side (e.g. a generic status note) and stays centered.
     """
     accent = SCOREBOARD_ACCENTS.get(kind, SCOREBOARD_ACCENTS["default"])
     img, draw = _scoreboard_canvas(accent)
@@ -735,15 +795,38 @@ def render_scoreboard_card(kind: str, home_name: str, away_name: str,
 
     # Team names under each crest
     name_font = _font(32, "semibold")
+    name_lines_drawn = 0
     for name, cx in ((home_name, crest_x_left + crest_size[0] / 2), (away_name, crest_x_right + crest_size[0] / 2)):
         ty = row_cy + crest_size[1] / 2 + 24
         lines = textwrap.wrap(name.upper(), width=13)[:2]
+        name_lines_drawn = max(name_lines_drawn, len(lines))
         for i, line in enumerate(lines):
             lw = _text_w(draw, line, name_font)
             draw.text((cx - lw / 2, ty + i * 38), line, font=name_font, fill="#FFFFFF")
 
-    # Optional event line (e.g. "⚽ Player Name  73'") under the row
-    if event_line:
+    # Event line(s) below the crest/name row. Side-anchored lines (goal
+    # scorer, full-time scorer list, red card) sit under the scoring
+    # team's own crest so it's immediately clear whose event it is,
+    # rather than a single line straddling the middle of the card that
+    # reads ambiguous when both teams have scored.
+    side_y_start = row_cy + crest_size[1] / 2 + 24 + name_lines_drawn * 38 + 20
+    side_font = _font(26, "semibold")
+
+    def _draw_side_lines(text: str, cx: float):
+        y = side_y_start
+        for raw_line in text.split("\n"):
+            for line in textwrap.wrap(raw_line, width=17) or [""]:
+                lw = _text_w(draw, line, side_font)
+                draw.text((cx - lw / 2, y), line, font=side_font, fill="#FFFFFF")
+                y += 32
+
+    if home_event_line:
+        _draw_side_lines(home_event_line, crest_x_left + crest_size[0] / 2)
+    if away_event_line:
+        _draw_side_lines(away_event_line, crest_x_right + crest_size[0] / 2)
+
+    # Generic centered event line — only used when no side is known.
+    if event_line and not (home_event_line or away_event_line):
         ev_font = _font(34, "semibold")
         y = row_cy + hex_h / 2 + 90
         for raw_line in event_line.split("\n"):
