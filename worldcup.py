@@ -2,9 +2,7 @@
 worldcup.py — World Cup filler content
 ==========================================
 Fills quiet gaps (no real match event in the last 30 min, 5am-11pm)
-with World Cup stats. Two content types, rotated:
-  - Top scorers (Golden Boot race)
-  - Win probability for the next unstarted World Cup fixture (via elo.py)
+with World Cup top-scorers (Golden Boot race) content.
 
 ⚠️  Top-scorer endpoint needs a live smoke test — ESPN's stat-leaders
 endpoint shape couldn't be verified against a live response from this
