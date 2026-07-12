@@ -169,6 +169,7 @@ _MANAGER_TRANSFER_PATTERNS = [
     r"\b(?:appoint(?:s|ed|ment)?|nam(?:es|ed)|confirm(?:s|ed)?|unveil(?:s|ed)?|hir(?:e|es|ed|ing))\b[^.]{0,25}\b(?:manager|head\s+coach|boss|coach)\b",
     r"\bnew\s+(?:manager|head\s+coach|boss)\b",
     r"\btakes?\s+over\s+as\s+(?:manager|coach|boss)\b",
+    r"\btakes?\s+(?:the\s+)?helm\b",
     r"\binterim\s+(?:manager|boss|coach)\b",
     r"\bagrees?\s+to\s+become\b[^.]{0,25}\bmanager\b",
     r"\bset\s+to\s+become\b[^.]{0,25}\b(?:manager|head\s+coach|boss)\b",
@@ -217,6 +218,7 @@ _PLAYER_TRANSFER_PATTERNS = [
     r"\b(?:extend|extends|extended|renew|renews|renewed)\b[^.]{0,25}\bcontract\b",
     r"\bpersonal\s+terms\b",
     r"\bclose\s+to\s+(?:joining|signing|a\s+move|a\s+deal)\b",
+    r"\bnear(?:ing)?\s+(?:a\s+)?deal\b",
     r"\bwant(?:s|ed)?\s+to\s+(?:sign|join)\b",
     r"\bprefer(?:s|red)?\s+to\s+join\b", r"\bset\s+to\s+join\b",
     r"\bannounces?\s+(?:his\s+|her\s+)?retirement\b", r"\bretires\b",
@@ -231,6 +233,7 @@ _GOSSIP_PATTERNS = [
     r"\b(?:want(?:s|ed)?|keen|monitor(?:ing)?|admir(?:er|ing)?|ey(?:e|es|eing|ed)|track(?:ing)?|scout(?:ing)?)\b[^.]{0,100}\b(?:sign|join|deal|move|transfer)\b",
     r"\binterest(?:ed)?\b",
     r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
+    r"\bcould\s+(?:opt|move|switch)\s+for\b",
 ]
 
 # Player-quote spotlight — currently scoped to Messi and Ronaldo only
