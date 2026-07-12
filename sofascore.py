@@ -207,6 +207,58 @@ def _normalize_event(event: dict, comp_flag_fn, is_intl_fn) -> dict | None:
         return None
 
 
+def get_best_player(event_id) -> dict | None:
+    """
+    Man of the Match, best-effort: fetches the lineups endpoint (player
+    ratings per side) and returns whichever player has the highest
+    numeric rating across both teams. Returns None on any failure or
+    missing data — the caller must treat that as "skip the MOTM post
+    for this match", never as a reason to guess or invent a name.
+
+    ⚠️ Same caveat as the rest of this file: the exact lineups/ratings
+    JSON shape below is the well-documented public Sofascore pattern
+    but could not be smoke-tested against a live response in this
+    sandbox. Defensively parsed — a field-name mismatch degrades to
+    None (no MOTM posted) rather than crashing the bot. Watch the logs
+    on first deploy for "[SOFASCORE] MOTM: no rated players found" on
+    a finished match — if that happens consistently, the field paths
+    below need adjusting against a real response.
+
+    Returns: {"name": str, "team_side": "home"|"away", "rating": float,
+              "photo_url": str} or None.
+    """
+    data = _get(f"{SOFASCORE_API}/event/{event_id}/lineups")
+    if not data:
+        print("[SOFASCORE] MOTM: lineups endpoint returned nothing")
+        return None
+
+    best = None  # (rating, name, side, player_id)
+    for side in ("home", "away"):
+        squad = (data.get(side) or {}).get("players", []) or []
+        for entry in squad:
+            player = entry.get("player", {}) or {}
+            stats = entry.get("statistics", {}) or {}
+            rating = stats.get("rating")
+            name = player.get("name")
+            pid = player.get("id")
+            if rating is None or not name:
+                continue
+            try:
+                rating = float(rating)
+            except (TypeError, ValueError):
+                continue
+            if best is None or rating > best[0]:
+                best = (rating, name, side, pid)
+
+    if best is None:
+        print("[SOFASCORE] MOTM: no rated players found")
+        return None
+
+    rating, name, side, pid = best
+    photo_url = f"{SOFASCORE_API}/player/{pid}/image" if pid else ""
+    return {"name": name, "team_side": side, "rating": round(rating, 1), "photo_url": photo_url}
+
+
 def get_todays_matches(comp_flag_fn, is_intl_fn) -> list[dict]:
     """Returns [] on any failure — the caller (scraper.py) treats an
     empty list as a signal to fall back to ESPN for this poll."""
