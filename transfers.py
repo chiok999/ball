@@ -233,14 +233,44 @@ _GOSSIP_PATTERNS = [
     r"\bopen['\u2018\u2019]?\s+to\s+offers\b",
 ]
 
-# category -> (compiled patterns, display label). Order matters:
+# Player-quote spotlight — currently scoped to Messi and Ronaldo only
+# (the two names Zafar asked for). Requires the player's name AND a
+# speech-indicator verb in the same headline, so a plain transfer or
+# stats headline that happens to mention either player doesn't get
+# miscategorized as a "quote" story. Checked before every other
+# category since it's the narrowest (name-anchored) bucket.
+_PLAYER_QUOTE_PATTERNS = [
+    r"\b(?:lionel\s+)?messi\b[^.]{0,60}\b(?:says?|said|reveals?|reacts?|insists?|admits?|hints?|warns?|opens?\s+up|speaks?\s+out|hits?\s+back|responds?|tells?|claims?|explains?)\b",
+    r"\b(?:cristiano\s+)?ronaldo\b[^.]{0,60}\b(?:says?|said|reveals?|reacts?|insists?|admits?|hints?|warns?|opens?\s+up|speaks?\s+out|hits?\s+back|responds?|tells?|claims?|explains?)\b",
+    r"\b(?:says?|said|reveals?|reacts?|insists?|admits?)\b[^.]{0,60}\b(?:messi|ronaldo)\b",
+]
+
+# Injury news — sidelined/ruled-out/surgery/return-date stories. Checked
+# after manager/quote/World Cup but before deal-done/transfer/gossip so
+# an injury story doesn't get miscategorized as a transfer just because
+# it mentions a club or a return timeline.
+_INJURY_PATTERNS = [
+    r"\binjur(?:y|ies|ed)\b",
+    r"\bruled\s+out\b", r"\bsidelined\b",
+    r"\b(?:hamstring|acl|groin|calf|ankle|knee|thigh|achilles|meniscus|metatarsal|hip|shoulder|back)\s+(?:injury|problem|issue|strain|tear|surgery)\b",
+    r"\bundergoes?\s+surgery\b",
+    r"\bout\s+for\s+(?:the\s+season|\d+\s+(?:weeks?|months?))\b",
+    r"\breturn(?:s|ed|ing)?\s+from\s+injury\b",
+    r"\bfitness\s+(?:test|concern|doubt|update)\b",
+    r"\bmiss(?:es|ed)?\s+(?:the\s+rest\s+of\s+the\s+season|the\s+world\s+cup)\b",
+    r"\bscan\s+(?:result|confirms?)\b",
+    r"\bdoubtful\s+for\b",
+]
+
 # manager sacking/transfer and World Cup are checked before
 # deal-done/player-transfer/gossip so a headline that could fit two
 # buckets lands in the more specific one.
 _CATEGORIES = (
+    ("player_quote",     [re.compile(p, re.I) for p in _PLAYER_QUOTE_PATTERNS],     "Player Spotlight"),
     ("manager_sacking",  [re.compile(p, re.I) for p in _MANAGER_SACKING_PATTERNS],  "Manager Sacking"),
     ("manager_transfer", [re.compile(p, re.I) for p in _MANAGER_TRANSFER_PATTERNS], "Manager Transfer News"),
     ("worldcup",         [re.compile(p, re.I) for p in _WORLDCUP_PATTERNS],         "World Cup News"),
+    ("injury",           [re.compile(p, re.I) for p in _INJURY_PATTERNS],           "Injury News"),
     ("deal_done",        [re.compile(p, re.I) for p in _DEAL_DONE_PATTERNS],        "Deal Done"),
     ("player_transfer",  [re.compile(p, re.I) for p in _PLAYER_TRANSFER_PATTERNS],  "Player Transfer News"),
     ("gossip",           [re.compile(p, re.I) for p in _GOSSIP_PATTERNS],           "Gossip"),
