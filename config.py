@@ -25,6 +25,11 @@ POST_RED_CARDS      = os.getenv("POST_RED_CARDS",      "true").lower() == "true"
 POST_FULLTIME       = os.getenv("POST_FULLTIME",       "true").lower() == "true"
 POST_DAILY_PREVIEW  = os.getenv("POST_DAILY_PREVIEW",  "true").lower() == "true"
 
+# Man of the Match — only available for Sofascore-sourced matches (ESPN's
+# free API carries no player ratings), so this silently posts nothing for
+# an ESPN-sourced match rather than guessing a name.
+POST_MOTM            = os.getenv("POST_MOTM",            "true").lower() == "true"
+
 # Hour (UTC) to post the morning fixture list
 DAILY_PREVIEW_HOUR  = int(os.getenv("DAILY_PREVIEW_HOUR", "9"))
 
@@ -79,8 +84,16 @@ TRANSFER_LEAGUES: dict[str, str] = {
     "ita.1": "Serie A",
     "fra.1": "Ligue 1",
     "usa.1": "MLS",
+    "ksa.1": "Saudi Pro League",
 }
 TRANSFER_POLL_EVERY_TICKS = int(os.getenv("TRANSFER_POLL_EVERY_TICKS", "5"))
+
+# Player-quote spotlight posts (currently scoped to Messi and Ronaldo —
+# see transfers._PLAYER_QUOTE_PATTERNS) and injury-news posts share the
+# same news pipeline/freshness rules as every other category above, and
+# can each be switched off independently.
+POST_PLAYER_QUOTES  = os.getenv("POST_PLAYER_QUOTES",  "true").lower() == "true"
+POST_INJURY_NEWS    = os.getenv("POST_INJURY_NEWS",    "true").lower() == "true"
 
 # Independent safety net from the dedup state: even if state.json is
 # ever lost (a redeploy without a persistent volume, a corrupted file,
@@ -97,7 +110,7 @@ TRANSFER_MAX_AGE_HOURS = int(os.getenv("TRANSFER_MAX_AGE_HOURS", "6"))
 # in a row even though MAX_POSTS_PER_HOUR hasn't been hit yet, which
 # reads as spammy and risks a Facebook flag. Max 1 news post every 30
 # minutes keeps reach healthy without flooding the page.
-TRANSFER_MAX_POSTS_PER_WINDOW = int(os.getenv("TRANSFER_MAX_POSTS_PER_WINDOW", "1"))
+TRANSFER_MAX_POSTS_PER_WINDOW = int(os.getenv("TRANSFER_MAX_POSTS_PER_WINDOW", "2"))
 TRANSFER_WINDOW_MINUTES       = int(os.getenv("TRANSFER_WINDOW_MINUTES",       "30"))
 
 # ── VAR / disallowed goals ────────────────────────────────────────────
