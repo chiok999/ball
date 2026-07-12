@@ -55,6 +55,9 @@ ESPN_CLUB_LEAGUES: dict[str, str] = {
     # (e.g. Lyon vs St Gallen in July). ESPN groups every club friendly
     # worldwide under this single slug, unlike domestic leagues.
     "club.friendly":    "Club Friendly",
+    "nonfifa":          "Non-FIFA Friendly",
+    "global.champs_cup": "Club Tour Friendly",
+    "friendly.emirates_cup": "Emirates Cup",
     # Men's European / continental
     "uefa.champions":   "Champions League",
     "uefa.europa":      "Europa League",
