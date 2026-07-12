@@ -81,6 +81,8 @@ ACCENTS = {
     "gossip":   "#581C87",  # purple — clearly "speculative", distinct from confirmed news
     "worldcup": "#065F46",  # emerald — ties to World Cup branding
     "stats":    "#312E81",  # indigo (World Cup filler cards)
+    "player_quote": "#B45309",  # amber — spotlight/quote feel, distinct from transfer's burnt orange
+    "injury":   "#374151",  # slate gray — subdued/clinical, distinct from the red urgency of a sacking
 }
 
 # Badge (pill) style per category — drawn, never emoji.
@@ -99,6 +101,8 @@ BADGES = {
     "gossip":   ("GOSSIP",           "#7C3AED"),
     "worldcup": ("WORLD CUP",        "#059669"),
     "stats":    ("STATS",            "#4338CA"),
+    "player_quote": ("PLAYER SPOTLIGHT", "#B45309"),
+    "injury":   ("INJURY NEWS",      "#4B5563"),
 }
 
 GOLD  = "#FFD400"
@@ -351,6 +355,32 @@ def _crest_or_avatar(url: str, name: str, size=(170, 170)):
         badge.paste(crest, (cx, cy), crest)
         return badge
     return _initials_avatar(name, size)
+
+
+def _player_badge_or_crest(player_photo_url: str, team_crest_url: str, player_name: str, size=(170, 170)):
+    """
+    Man of the Match badge chain: real player photo first, then the
+    player's team crest (not initials) if the photo is missing or
+    fails to download, and only initials as the very last resort if
+    even the team crest can't be fetched. This mirrors _crest_or_avatar
+    but with an extra middle rung, since a MOTM card without any
+    photo/logo reads far more broken than a scoreboard card does.
+    """
+    photo = _fetch_crest(player_photo_url, size)
+    if photo is not None:
+        badge = _hex_badge_frame(size)
+        cx = (size[0] - photo.width) // 2
+        cy = (size[1] - photo.height) // 2
+        badge.paste(photo, (cx, cy), photo)
+        return badge
+    crest = _fetch_crest(team_crest_url, size)
+    if crest is not None:
+        badge = _hex_badge_frame(size)
+        cx = (size[0] - crest.width) // 2
+        cy = (size[1] - crest.height) // 2
+        badge.paste(crest, (cx, cy), crest)
+        return badge
+    return _initials_avatar(player_name, size)
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -668,16 +698,20 @@ SCOREBOARD_ACCENTS = {
     "manager":   "#3FD3E8",
     "worldcup":  "#3FD3E8",
     "stats":     "#818CF8",
+    "extratime": "#FFC93C",   # bright gold — matches goal's urgency, distinct from the blue half/full-time cards
+    "motm":      "#FFC93C",   # bright gold — award/spotlight moment
 }
 
 SCOREBOARD_HEADERS = {
-    "default":  ("MATCH UPDATE", ""),
-    "kickoff":  ("MATCH UPDATE", "KICK-OFF"),
-    "goal":     ("MATCH UPDATE", "GOAL"),
-    "halftime": ("MATCH UPDATE", "HALF TIME"),
-    "redcard":  ("MATCH UPDATE", "RED CARD"),
-    "fulltime": ("MATCH RESULT", "FULL TIME"),
-    "var":      ("MATCH UPDATE", "VAR REVIEW"),
+    "default":   ("MATCH UPDATE", ""),
+    "kickoff":   ("MATCH UPDATE", "KICK-OFF"),
+    "goal":      ("MATCH UPDATE", "GOAL"),
+    "halftime":  ("MATCH UPDATE", "HALF TIME"),
+    "redcard":   ("MATCH UPDATE", "RED CARD"),
+    "fulltime":  ("MATCH RESULT", "FULL TIME"),
+    "var":       ("MATCH UPDATE", "VAR REVIEW"),
+    "extratime": ("MATCH UPDATE", "EXTRA TIME"),
+    "motm":      ("MAN OF THE MATCH", ""),
 }
 
 
@@ -834,6 +868,65 @@ def render_scoreboard_card(kind: str, home_name: str, away_name: str,
                 lw = _text_w(draw, line, ev_font)
                 draw.text((W / 2 - lw / 2, y), line, font=ev_font, fill="#FFFFFF")
                 y += 44
+
+    _draw_brand_ribbon_v2(img, draw, accent)
+    return _save(img)
+
+
+def render_motm_card(player_name: str, team_name: str, rating,
+                      competition: str = "", opponent_name: str = "",
+                      player_photo_url: str = "", team_crest_url: str = "") -> str:
+    """
+    Man of the Match card — same flat navy scoreboard family as
+    kickoff/goal/half/full-time, but single-badge instead of two-team,
+    since there's one subject (the player) rather than two sides.
+    Badge chain: real player photo -> player's team crest -> initials
+    (see _player_badge_or_crest) so a missing headshot still shows the
+    team crest rather than a blank/generic gap.
+    """
+    accent = SCOREBOARD_ACCENTS.get("motm", SCOREBOARD_ACCENTS["default"])
+    img, draw = _scoreboard_canvas(accent)
+    W, H = CARD_SIZE
+
+    top_line, _ = SCOREBOARD_HEADERS.get("motm", SCOREBOARD_HEADERS["default"])
+    header_font = _font(50, "extrabold")
+    hw = _text_w(draw, top_line, header_font)
+    draw.text((W / 2 - hw / 2, 64), top_line, font=header_font, fill="#FFFFFF")
+
+    if competition:
+        comp_font = _font(24, "regular")
+        comp_text = competition.upper()
+        cw = _text_w(draw, comp_text, comp_font)
+        draw.text((W / 2 - cw / 2, 134), comp_text, font=comp_font, fill="#93A3D1")
+
+    badge_size = (260, 260)
+    badge = _player_badge_or_crest(player_photo_url, team_crest_url, player_name, badge_size)
+    badge_x = int(W / 2 - badge_size[0] / 2)
+    badge_y = 220
+    img.paste(badge, (badge_x, badge_y), badge)
+    draw = ImageDraw.Draw(img)
+
+    name_font = _font(44, "extrabold")
+    name_lines = textwrap.wrap(player_name.upper(), width=18)[:2]
+    ny = badge_y + badge_size[1] + 34
+    for line in name_lines:
+        lw = _text_w(draw, line, name_font)
+        draw.text((W / 2 - lw / 2, ny), line, font=name_font, fill="#FFFFFF")
+        ny += 54
+
+    team_font = _font(28, "semibold")
+    team_text = team_name.upper()
+    if opponent_name:
+        team_text += f"  vs  {opponent_name.upper()}"
+    tw = _text_w(draw, team_text, team_font)
+    draw.text((W / 2 - tw / 2, ny + 6), team_text, font=team_font, fill=accent)
+    ny += 6 + 40
+
+    if rating is not None:
+        rating_text = f"RATING {rating}"
+        rating_font = _font(30, "semibold")
+        rw = _text_w(draw, rating_text, rating_font)
+        draw.text((W / 2 - rw / 2, ny + 14), rating_text, font=rating_font, fill="#C7D0E8")
 
     _draw_brand_ribbon_v2(img, draw, accent)
     return _save(img)
