@@ -51,6 +51,10 @@ ESPN_CLUB_LEAGUES: dict[str, str] = {
     "bra.1":            "Brasileirao",
     "mex.1":            "Liga MX",
     "usa.1":            "MLS",
+    # Off-season / gap-filler — pre-season and mid-season club friendlies
+    # (e.g. Lyon vs St Gallen in July). ESPN groups every club friendly
+    # worldwide under this single slug, unlike domestic leagues.
+    "club.friendly":    "Club Friendly",
     # Men's European / continental
     "uefa.champions":   "Champions League",
     "uefa.europa":      "Europa League",
@@ -186,6 +190,7 @@ def is_international_match(match: dict) -> bool:
 
 _FLAG_MAP = {
     "Champions League": "🏆", "Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Club Friendly": "🤝",
     "Bundesliga": "🇩🇪", "La Liga": "🇪🇸", "Serie A": "🇮🇹",
     "Ligue 1": "🇫🇷", "World Cup": "🌍", "Friendly": "🤝",
     "European Championship": "🇪🇺", "Nations League": "🏆",
@@ -430,6 +435,21 @@ def _normalize_espn(event: dict, slug: str, league_name: str) -> dict | None:
 # no Selenium, no extra dependency.
 
 ESPN_SUMMARY_API = "https://site.api.espn.com/apis/site/v2/sports/soccer"
+
+
+def get_man_of_the_match(match: dict) -> dict | None:
+    """
+    Source-agnostic Man of the Match lookup. Only Sofascore-sourced
+    matches carry per-player ratings in this bot today — ESPN's free
+    site API doesn't expose them — so an ESPN-sourced match simply
+    returns None (caller skips the MOTM post for that match rather
+    than guessing). Returns {"name", "team_side", "rating",
+    "photo_url"} or None; see sofascore.get_best_player for details.
+    """
+    if match.get("_source") != "sofascore" or not match.get("_raw_id"):
+        return None
+    import sofascore
+    return sofascore.get_best_player(match["_raw_id"])
 
 
 def get_lineup(league_slug: str, event_id: str) -> list[dict]:
