@@ -32,7 +32,21 @@ HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/131.0.0.0 Safari/537.36",
     "Accept": "application/json, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    # Cloudflare-fronted sites like Sofascore often check these even when
+    # a convincing User-Agent alone isn't enough — cheap to send, no
+    # guarantee against an IP-level block (see _get()'s 403 handling
+    # below), but costs nothing to try.
+    "Referer": "https://www.sofascore.com/",
+    "Origin":  "https://www.sofascore.com",
 }
+
+# Set the first time a 403 is seen this run, so we log the "likely
+# datacenter-IP block" warning once loudly instead of once per poll
+# forever — the repeated per-poll "[SOFASCORE] parsed 0 matches" line
+# alone looks identical to "quiet day, no matches" and previously took
+# a log-diving session to tell apart from an actual outage.
+_warned_blocked = False
 
 # Sofascore tournament-name substrings we care about, mapped to the same
 # display names ESPN uses so downstream formatting/hashtags stay identical.
@@ -64,12 +78,26 @@ _STATUS_MAP = {
 
 
 def _get(url: str, timeout: int = 10) -> dict | None:
+    global _warned_blocked
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
         if r.status_code == 200:
             return r.json()
         if r.status_code == 429:
             print("[SOFASCORE] ⚠️  Rate limited")
+            return None
+        if r.status_code == 403:
+            if not _warned_blocked:
+                print(
+                    "[SOFASCORE] 🚫 403 Forbidden — this almost always means "
+                    "Sofascore's Cloudflare protection is blocking this "
+                    "server's IP (common on Railway/Heroku/Render datacenter "
+                    "ranges), NOT a header/parsing problem. ESPN fallback "
+                    "will be used for the rest of this run. Test from a "
+                    "non-datacenter network to confirm before spending time "
+                    "on header/cookie tweaks."
+                )
+                _warned_blocked = True
             return None
         print(f"[SOFASCORE] HTTP {r.status_code}: {url[:90]}")
     except Exception as e:
