@@ -250,6 +250,7 @@ def _key_redcard(mid: str, b: dict)     -> str:
 def _key_halftime(mid: str)             -> str: return f"halftime:{mid}"
 def _key_extratime(mid: str)            -> str: return f"extratime:{mid}"
 def _key_fulltime(mid: str)             -> str: return f"ft:{mid}"
+def _key_motm(mid: str)                 -> str: return f"motm:{mid}"
 def _key_var(mid: str, v: dict)         -> str: return f"var:{mid}:{v.get('minute','?')}:{v.get('player','?')}"
 
 
@@ -302,7 +303,17 @@ _NEWS_CARD_KIND = {
     "deal_done":        "deal_done",
     "gossip":           "gossip",
     "worldcup":         "worldcup",
+    "player_quote":     "player_quote",
+    "injury":           "injury",
 }
+
+# Categories that never use the source's own article photo, even when
+# one is available — player-quote/interview photos are frequently
+# broadcast screenshots with a rival outlet's on-screen logo baked in
+# (this is why the old Post-Match Reaction category was disabled
+# outright). A generated headline card sidesteps that instead of
+# removing the category entirely.
+_NEWS_NO_SOURCE_PHOTO = {"player_quote"}
 
 
 def maybe_post_transfer_news(tick: int):
@@ -316,6 +327,11 @@ def maybe_post_transfer_news(tick: int):
         print(f"[NEWS] ⚠️  {e}")
         return
     for item in items:
+        category = item.get("category")
+        if category == "player_quote" and not config.POST_PLAYER_QUOTES:
+            continue
+        if category == "injury" and not config.POST_INJURY_NEWS:
+            continue
         if not _transfer_rate_limit_ok():
             break  # remaining items stay unseen and get retried next poll
         label = item.get("category_label", "News")
@@ -326,7 +342,7 @@ def maybe_post_transfer_news(tick: int):
         # or manager, not a solid-color text card) — falls back
         # automatically to a vertically-centered headline card if the
         # source had no image or it failed to download/decode.
-        if item.get("image"):
+        if item.get("image") and category not in _NEWS_NO_SOURCE_PHOTO:
             img = _safe_image(
                 graphics.render_photo_card, card_kind, item["headline"],
                 item["image"], source=item.get("source"),
@@ -484,7 +500,16 @@ def process_match(match: dict):
             status == "FINISHED" and match.get("_went_to_et")):
         if not _already_posted(_key_extratime(mid)):
             print(f"[BOT] ⏱️  Extra time: {hname} vs {aname}")
-            _post_if_new(_key_extratime(mid), poster.fmt_extratime(match))
+            h_sc, a_sc = match["score"]["fullTime"].get("home", 0), match["score"]["fullTime"].get("away", 0)
+            img = _safe_image(
+                graphics.render_scoreboard_card, "extratime", hname, aname, h_sc or 0, a_sc or 0,
+                competition=match.get("_comp_name", ""),
+                status_label="EXTRA TIME", show_pulse=False,
+                home_event_line=poster.scorers_line(match, side="home"),
+                away_event_line=poster.scorers_line(match, side="away"),
+                home_crest_url=match["homeTeam"].get("crest", ""), away_crest_url=match["awayTeam"].get("crest", ""),
+            )
+            _post_if_new(_key_extratime(mid), poster.fmt_extratime(match), image_path=img)
 
     # ── Full time ─────────────────────────────────────────────────
     if config.POST_FULLTIME and status == "FINISHED" and not _already_posted(_key_fulltime(mid)):
@@ -512,6 +537,33 @@ def process_match(match: dict):
         )
         _post_if_new(_key_fulltime(mid), poster.fmt_fulltime(match), image_path=img)
 
+    # ── Man of the Match ─────────────────────────────────────────────
+    # Fires once, right after full time posts — only ever has data for
+    # Sofascore-sourced matches (see scraper.get_man_of_the_match).
+    if (config.POST_MOTM and status == "FINISHED"
+            and _already_posted(_key_fulltime(mid))
+            and not _already_posted(_key_motm(mid))):
+        motm = None
+        try:
+            motm = scraper.get_man_of_the_match(match)
+        except Exception as e:
+            print(f"[BOT] ⚠️  MOTM lookup failed: {e}")
+        if motm:
+            print(f"[BOT] 🌟 Man of the Match: {motm['name']}")
+            team = match["homeTeam"] if motm.get("team_side") == "home" else match["awayTeam"]
+            opponent = match["awayTeam"] if motm.get("team_side") == "home" else match["homeTeam"]
+            img = _safe_image(
+                graphics.render_motm_card, motm["name"], team["name"], motm.get("rating"),
+                competition=match.get("_comp_name", ""), opponent_name=opponent["name"],
+                player_photo_url=motm.get("photo_url", ""), team_crest_url=team.get("crest", ""),
+            )
+            _post_if_new(_key_motm(mid), poster.fmt_motm(match, motm), image_path=img)
+        else:
+            # No rating data available (ESPN-sourced match, or the
+            # lineups endpoint didn't return anything usable) — mark
+            # as posted anyway so we don't retry every tick forever.
+            _mark_posted(_key_motm(mid))
+
 
 # ══════════════════════════════════════════════════════════════════
 # STARTUP — seed finished matches to prevent duplicate posts
@@ -529,6 +581,7 @@ def _seed_finished(matches: list):
             _key_lineup(mid),
             _key_extratime(mid),
             _key_halftime(mid),
+            _key_motm(mid),
         ):
             if key not in _events:
                 _events[key] = time.time()
