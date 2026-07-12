@@ -284,7 +284,18 @@ def maybe_post_filler(matches: list):
         if _post_now(poster.fmt_top_scorers(scorers), image_path=img):
             return
 
-    print("[FILLER] ⚠️  Nothing posted this cycle — top scorers unavailable")
+    # Top scorers has proven unreliable (ESPN's soccer stats endpoints
+    # are thin/undocumented) — fall back to upcoming fixtures, which
+    # reuses the plain /scoreboard endpoint scraper.py already depends
+    # on and has been confirmed working. This is what actually keeps
+    # quiet days from posting nothing at all.
+    fixtures = worldcup.get_upcoming_fixtures(config.WORLD_CUP_SLUG)
+    if fixtures:
+        print("[FILLER] 📅 Posting upcoming World Cup fixtures (top scorers unavailable)")
+        if _post_now(poster.fmt_upcoming_fixtures(fixtures)):
+            return
+
+    print("[FILLER] ⚠️  Nothing posted this cycle — top scorers and upcoming fixtures both unavailable")
 
 
 # ══════════════════════════════════════════════════════════════════
