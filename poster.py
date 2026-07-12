@@ -602,6 +602,8 @@ _NEWS_CATEGORY_STYLE = {
     "deal_done":        ("DEAL DONE",             "✅", "DealDone"),
     "gossip":           ("GOSSIP",                "🗣️", "Gossip"),
     "worldcup":         ("WORLD CUP NEWS",        "🌍", "WorldCup2026"),
+    "player_quote":     ("PLAYER SPOTLIGHT",      "🎙️", "PlayerSpotlight"),
+    "injury":           ("INJURY NEWS",           "🩹", "InjuryNews"),
 }
 
 
@@ -617,6 +619,8 @@ _STORY_CONTEXT = {
     "deal_done":        "It's official — here's the latest confirmed move in the {league}.",
     "gossip":           "Just talk for now in the {league} — nothing confirmed yet, but worth keeping an eye on.",
     "worldcup":         "A big World Cup moment — follow along for how this shapes the tournament picture.",
+    "player_quote":     "Straight from the player himself — more reaction as this story develops.",
+    "injury":           "An injury update from the {league} — we'll follow up as more details on recovery time emerge.",
 }
 
 
@@ -783,6 +787,23 @@ def fmt_fulltime(match: dict) -> str:
         body.append(f"⚽ {match['awayTeam']['name']}: " + ", ".join(_goal_line(g) for g in away_goals))
 
     return _build_post(header, body, _match_hashtags(match), marker="🏁")
+
+
+def fmt_motm(match: dict, motm: dict) -> str:
+    """
+    🌟 Man of the Match: L. Messi (Argentina)
+    Rating: 9.2 | Argentina 3-1 Switzerland
+
+    #Argentina #ManOfTheMatch
+    """
+    team = match["homeTeam"]["name"] if motm.get("team_side") == "home" else match["awayTeam"]["name"]
+    header = f"Man of the Match: {motm['name']} ({team})"
+    body = [f"⭐ {_plain_score_line(match, *_current_score(match))}"]
+    if motm.get("rating") is not None:
+        body.append(f"📊 Rating: {motm['rating']}")
+
+    tags = _match_hashtags(match) + ["ManOfTheMatch"]
+    return _build_post(header, body, tags, marker="🌟")
 
 
 def _current_score(match: dict) -> tuple:
