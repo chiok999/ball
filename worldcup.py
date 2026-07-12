@@ -66,3 +66,61 @@ def get_top_scorers(league_slug: str = "fifa.world", limit: int = 5) -> list[dic
     except Exception as e:
         print(f"[WORLDCUP] Top scorers parse error: {e}")
         return None
+
+
+def get_upcoming_fixtures(league_slug: str = "fifa.world", limit: int = 5) -> list[dict] | None:
+    """
+    Fallback filler content for quiet days, used when get_top_scorers()
+    comes back empty (its endpoint has proven unreliable on live
+    testing — ESPN's soccer stats support is thin even by their own
+    docs). This instead reuses the plain /scoreboard endpoint, which
+    is the same one scraper.py already depends on for live scores and
+    has been confirmed working — so this filler degrades gracefully
+    instead of depending on a second fragile, undocumented shape.
+
+    Returns [{"home": str, "away": str, "date": str}, ...] for the next
+    `limit` SCHEDULED matches (today + the next few days), or None if
+    the request fails or nothing is scheduled. Never raises — any
+    parse error just means "skip this filler slot," same convention
+    as get_top_scorers().
+    """
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc)
+    date_range = f"{now.strftime('%Y%m%d')}-{(now + timedelta(days=14)).strftime('%Y%m%d')}"
+    data = _get(f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league_slug}/scoreboard?dates={date_range}&limit=100")
+    if not data:
+        return None
+    try:
+        fixtures = []
+        for e in data.get("events", []):
+            state = e.get("status", {}).get("type", {}).get("state", "pre").lower()
+            if state != "pre":
+                continue  # only unplayed fixtures — this is a "what's coming up" filler, not a results recap
+            comp = (e.get("competitions") or [{}])[0]
+            competitors = comp.get("competitors", [])
+            if len(competitors) < 2:
+                continue
+            home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+            away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
+            home_name = home.get("team", {}).get("displayName", "")
+            away_name = away.get("team", {}).get("displayName", "")
+            if not home_name or not away_name:
+                continue
+            fixtures.append({
+                "home": home_name,
+                "away": away_name,
+                "utcDate": e.get("date", ""),
+                "comp": "FIFA World Cup",
+                "comp_flag": "🌍",
+            })
+            if len(fixtures) >= limit:
+                break
+        if not fixtures:
+            print("[WORLDCUP] ⚠️  No upcoming fixtures found in scoreboard response")
+            return None
+        print(f"[WORLDCUP] Upcoming fixtures: parsed {len(fixtures)} entries OK")
+        return fixtures
+    except Exception as e:
+        print(f"[WORLDCUP] Upcoming fixtures parse error: {e}")
+        return None
