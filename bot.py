@@ -703,7 +703,7 @@ def main():
           f"— {config.TRANSFER_NEWS_START_HOUR}:00-{config.TRANSFER_NEWS_END_HOUR}:00 UTC, "
           f"max {config.TRANSFER_MAX_POSTS_PER_WINDOW} per {config.TRANSFER_WINDOW_MINUTES}min")
     print(f"  Filler stats  : {config.POST_FILLER_CONTENT} — 1 per {config.FILLER_INTERVAL_MINUTES}min, "
-          f"pre-match window {config.FILLER_PRE_MATCH_HOURS}h, "
+          f"pre-match window {config.FILLER_PRE_MATCH_STOP_HOURS}h, "
           f"fixed window {config.FILLER_WINDOW_START_HOUR}:00-{config.FILLER_WINDOW_END_HOUR}:00 local "
           f"(API-Football key: {'SET ✅' if config.API_FOOTBALL_KEY else 'not set — legend stats only'})")
     print(f"  FB Page ID    : {'SET ✅' if config.FB_PAGE_ID else 'NOT SET — dev mode'}")
