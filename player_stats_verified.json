@@ -1,0 +1,39 @@
+{
+  "_notes": "Each entry was checked against multiple independent sources before being added. 'confidence' is 'high' only when sources agreed with no scope ambiguity. Anything with unresolved scope/date conflicts is marked 'needs_caveat' and should either be posted with the caveat text included, or skipped — never flattened into a clean-sounding number that isn't actually clean.",
+
+  "messi_2014_world_cup": {
+    "topic": "Messi's 2014 World Cup",
+    "stat_line": "7 appearances, 4 goals, 1 assist — Golden Ball winner, runner-up (lost final 1-0 to Germany, AET)",
+    "confidence": "high",
+    "sources": ["olympics.com", "goal.com", "espn.com", "sportskeeda.com"],
+    "verified_date": "2026-07-19",
+    "suggested_hook": "Messi's 2014 World Cup: best player of the tournament on a team that still lost the final. Peak individual brilliance or an overrated Golden Ball? 🤔"
+  },
+
+  "ronaldo_juventus_all_competitions": {
+    "topic": "Ronaldo's Juventus spell (2018-2021)",
+    "stat_line": "134 appearances, 101 goals — all competitions",
+    "confidence": "high",
+    "sources": ["juventus.com (official club source)"],
+    "verified_date": "2026-07-19",
+    "suggested_hook": "101 goals in 134 games in Serie A colours. Ronaldo's Juventus spell doesn't get talked about enough. 🐐"
+  },
+
+  "ronaldo_juventus_seriea_only": {
+    "topic": "Ronaldo's Juventus spell — Serie A only",
+    "stat_line": "98 appearances, 81 goals, 15 assists — Serie A only (narrower scope than the all-competitions figure above, don't mix the two in one post)",
+    "confidence": "high",
+    "sources": ["statmuse.com (3 independent queries, consistent)"],
+    "verified_date": "2026-07-19",
+    "suggested_hook": "Serie A only, not even counting Europe: 81 goals in 98 games for Ronaldo at Juventus. Still one of the most efficient spells by any striker in the league. 📈"
+  },
+
+  "messi_vs_chelsea": {
+    "topic": "Messi's career record vs Chelsea",
+    "stat_line": "UNRESOLVED — do not post a flat 'career total' number",
+    "confidence": "needs_caveat",
+    "sources": ["statmuse.com", "sportskeeda.com", "goal.com", "transfermarkt.com"],
+    "conflict_detail": "StatMuse gives 3 goals in the Champions League specifically. An older Sportskeeda piece (pre-dating his 100th UCL goal, which was scored against Chelsea) had him at 1 goal in his first 9 meetings. No source gives a clean, current, all-competitions career total. Post the Champions-League-scoped number only if used ('3 UCL goals vs Chelsea'), or skip this comparison entirely.",
+    "verified_date": "2026-07-19"
+  }
+}
