@@ -77,19 +77,6 @@ python bot.py
 # Without FB_PAGE_ID set, posts print to console instead
 ```
 
-## Facebook setup (free, one-time)
-1. [developers.facebook.com](https://developers.facebook.com) → Create App → **Business**
-2. Add product: **Facebook Login for Business**
-3. **Graph API Explorer** → select your app → your page → Generate Token
-4. Tick permissions: `pages_manage_posts`, `pages_read_engagement`
-5. Extend the token: [developers.facebook.com/tools/accesstoken](https://developers.facebook.com/tools/accesstoken)
-6. Your Page ID: found in your page URL or About section
-
-## Railway deployment
-1. Push this folder to GitHub
-2. [railway.app](https://railway.app) → New Project → Deploy from GitHub repo
-3. Set these env vars in Railway → Variables:
-
 | Variable | Value |
 |----------|-------|
 | `FB_PAGE_ID` | Your Facebook Page ID |
